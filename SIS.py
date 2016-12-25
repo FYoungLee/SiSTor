@@ -11,8 +11,10 @@ import datetime
 import requests
 import random
 import time
+import sqlite3
 from PyQt5.QtCore import QThread
 from PyQt5.QtCore import pyqtSignal
+import tor2mag
 
 
 class TheDownloader(QThread):
@@ -47,14 +49,16 @@ class TheDownloader(QThread):
             return None
 
     def make_soup(self, url):
-        while True:
+        try_times = 5
+        while try_times:
             try:
                 response = requests.get(url, headers={'User-Agent': self.get_headers()}, cookies=self.cookies, timeout=10)
                 return BeautifulSoup(response.content.decode('gbk', 'ignore'), 'lxml')
             except:
                 self.emitInfo('Time out on <a href="{}">this</a>, try again.'.format(url))
                 time.sleep(3)
-
+                try_times -= 1
+        return None
 
     def emitInfo(self, text):
         self.send_text.emit('[{t}] {info}'.format(t=datetime.datetime.now().strftime('%H:%M:%S'), info=text))
@@ -68,13 +72,16 @@ class SISTopic(TheDownloader):
         self.url = url
         self.thispool = topics_pool
         self.thistopics = maxtopics
+        connectDB = sqlite3.connect('SISDB.sqlite')
+        self.allUrlDownloaded = [x[0] for x in connectDB.cursor().execute('SELECT tid FROM SIS').fetchall()]
 
     def run(self):
         self.emitInfo('Topics collecting, 开始搜集所有帖子地址...')
         while True:
             try:
                 __tps = self.extract_info_from_page(next(self.url))
-                self.thispool.extend(__tps)
+                newtpc = filter(lambda x: x not in self.allUrlDownloaded, __tps)
+                self.thispool.extend(newtpc)
                 self.thistopics[0] += len(__tps)
             except StopIteration:
                 self.emitInfo('This thread topics collector done, 该线程帖子搜集完毕.')
@@ -106,29 +113,86 @@ class SISTopic(TheDownloader):
 
 
 class SISTors(TheDownloader):
-    def __init__(self, topics_pool, save_dir, current_progress, myname, pics=0, loginname=None, password=None, parent=None):
+    def __init__(self, topics_pool, current_progress, myname, loginname=None, password=None, parent=None):
         super(SISTors, self).__init__(loginname, password, parent)
         self.thispool = topics_pool
-        self.save_dir = save_dir
-        self.slash = self.get_os_slash()
         self.headers = self.get_headers()
-        self.pics = pics
         self.progress = current_progress
         self.myname = myname
         try:
             os.mkdir(self.save_dir)
         except:
             pass
+        # self.slash = self.get_os_slash()
+        # self.save_dir = save_dir
+        # self.pics = pics
 
     def run(self):
         while True:
             try:
-                self.download_content_from_topic(next(self.thispool))
+                self.download_content_from_topic_into_db(next(self.thispool))
             except StopIteration:
                 self.emitInfo('{} thread has finished, 该线程种子下载完了.'.format(self.myname))
                 return
 
-    def download_content_from_topic(self, topics):
+    def download_content_from_topic_into_db(self, topics):
+        tar_page = self.baseurl + topics[2]
+        t_id = topics[2].split('.')[0]
+        t_type = topics[0]
+        t_name = topics[1]
+        self.emitInfo('({}) Downloading {}'.format(self.myname, t_name))
+        pagesoup = self.make_soup(tar_page)
+        # get movie information
+        try:
+            page_info = pagesoup.find('td', {'class': 'postcontent'})
+        except AttributeError:
+            self.emitInfo('({}) {} failed.'.format(self.myname, tar_page))
+            return
+        try:
+            self.insertIntoDB(t_id, t_name, t_type, page_info)
+        except BaseException as err:
+            self.emitInfo(err)
+            return
+        self.progress[0] += 1
+
+    def insertIntoDB(self, tid, tname, ttype, page_info):
+        connect = sqlite3.connect('SISDB.sqlite')
+        sql_query = connect.cursor().execute
+
+        page_tors = page_info.find_all('a', {'href': re.compile(r'attachment')})
+        if page_tors is None:
+            connect.close()
+            raise BaseException('Broken page (页面错误)')
+        # download torrents
+        for each_attach in page_tors:
+            try:
+                print('Download {}'.format(each_attach.text))
+                torbyte = requests.get(self.baseurl + each_attach['href']).content
+                magaddr = tor2mag.decodeTor(torbyte)
+                sql_query('INSERT INTO SIStor VALUES(?, ?)', (tid, magaddr))
+            except BaseException as err:
+                print('{} {}'.format(each_attach, err))
+                continue
+        try:
+            text = page_info.find('div', {'class': 't_msgfont'}).text
+        except:
+            text = 'NULL'
+        sql_query('INSERT INTO SIS VALUES(?, ?, ?, ?)', (tid, tname, ttype, text))
+
+        for each_pic in page_info.find_all('img', {'src': re.compile(r'jpg|png')}):
+            pic_url = each_pic['src']
+            try:
+                if requests.head(pic_url, timeout=5).ok:
+                    sql_query('INSERT INTO SISpic VALUES(?, ?)', (tid, pic_url))
+            except BaseException:
+                print('Broken picture: {} (ignored)'.format(pic_url))
+                continue
+
+        connect.commit()
+        connect.close()
+
+    """
+    def download_content_from_topic_to_local(self, topics):
         # get target path
         tar_path = self.save_dir + self.slash + topics[0]
         tar_page = self.baseurl + topics[2]
@@ -140,7 +204,7 @@ class SISTors(TheDownloader):
         for each in '/:<>':
             clean_topic_name = clean_topic_name.replace(each, '')
         tar_path += self.slash + clean_topic_name + self.slash
-        self.emitInfo('({}) Download from {}'.format(self.myname, tar_path.split(self.slash)[-2]))
+        self.emitInfo('({}) Downloading {}'.format(self.myname, clean_topic_name))
         try:
             os.mkdir(tar_path)
         except FileExistsError:
@@ -152,14 +216,18 @@ class SISTors(TheDownloader):
             return
         pagesoup = self.make_soup(tar_page)
         # get movie information
-        page_info = pagesoup.find('td', {'class': 'postcontent'})
+        try:
+            page_info = pagesoup.find('td', {'class': 'postcontent'})
+        except AttributeError:
+            self.emitInfo('({}) {} failed.'.format(self.myname, tar_page))
+            return
         # get torrents address and download
         try:
             self.save_torrents(page_info, tar_path)
         except BaseException as err:
             print(err)
             self.emitInfo(err)
-            return 
+            return
         # write movie information to local file
         self.save_info_text(page_info, tar_path)
         # download pictures
@@ -208,3 +276,4 @@ class SISTors(TheDownloader):
             return '/'
         elif os.name == 'nt':
             return '\\'
+    """

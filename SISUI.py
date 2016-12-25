@@ -7,13 +7,14 @@ from PyQt5.QtWidgets import QWidget, QPushButton, QHBoxLayout, QVBoxLayout, QLab
 class SISMainWindow(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
-        if os.name == 'nt':
-            self.path_slash = '\\'
-        elif os.name == 'posix':
-            self.path_slash = '/'
-        else:
-            if QMessageBox().critical(self, 'Error', 'Unknown Operate System\n未知系统错误') == QMessageBox.OK:
-                exit()
+        #
+        # if os.name == 'nt':
+        #     self.path_slash = '\\'
+        # elif os.name == 'posix':
+        #     self.path_slash = '/'
+        # else:
+        #     if QMessageBox().critical(self, 'Error', 'Unknown Operate System\n未知系统错误') == QMessageBox.OK:
+        #         exit()
         self.init_ui()
         # this list store all topics that download from topic_downloader thread.
         self.topics_pool = []
@@ -60,16 +61,16 @@ class SISMainWindow(QWidget):
         self.login_box.addWidget(self.login_pw_label)
         self.login_box.addWidget(self.login_pw_line)
 
-        self.path_box = QHBoxLayout()
-        self.path_label = QLabel('Save to (保存路径)')
-        self.path_line = QLineEdit()
-        self.path_loc_btn = QPushButton('...')
-        self.path_loc_btn.setFixedWidth(40)
-        self.path_loc_btn.clicked.connect(self.path_btn_clicked)
-        self.path_line.setText(os.getcwd()+self.path_slash)
-        self.path_box.addWidget(self.path_label)
-        self.path_box.addWidget(self.path_line)
-        self.path_box.addWidget(self.path_loc_btn)
+        # self.path_box = QHBoxLayout()
+        # self.path_label = QLabel('Save to (保存路径)')
+        # self.path_line = QLineEdit()
+        # self.path_loc_btn = QPushButton('...')
+        # self.path_loc_btn.setFixedWidth(40)
+        # self.path_loc_btn.clicked.connect(self.path_btn_clicked)
+        # self.path_line.setText(os.getcwd()+self.path_slash)
+        # self.path_box.addWidget(self.path_label)
+        # self.path_box.addWidget(self.path_line)
+        # self.path_box.addWidget(self.path_loc_btn)
 
         self.forum_select_box = QHBoxLayout()
         self.forum_info = QLabel('Which one (选择子版块)')
@@ -103,15 +104,15 @@ class SISMainWindow(QWidget):
         self.thread_box.addWidget(self.thread_menu)
         self.thread_box.addStretch(1)
 
-        self.pic_box = QHBoxLayout()
-        self.pic_label = QLabel('How many pictures you\'d like to download in each topic.'
-                                '\n(每个主题下载多少影片介绍图片，图越多耗时越久)')
-        self.pic_menu = QComboBox()
-        for each in range(0, 11):
-            self.pic_menu.addItem(str(each))
-        self.pic_box.addWidget(self.pic_label)
-        self.pic_box.addWidget(self.pic_menu)
-        self.pic_box.addStretch(1)
+        # self.pic_box = QHBoxLayout()
+        # self.pic_label = QLabel('How many pictures you\'d like to download in each topic.'
+        #                         '\n(每个主题下载多少影片介绍图片，图越多耗时越久)')
+        # self.pic_menu = QComboBox()
+        # for each in range(0, 11):
+        #     self.pic_menu.addItem(str(each))
+        # self.pic_box.addWidget(self.pic_label)
+        # self.pic_box.addWidget(self.pic_menu)
+        # self.pic_box.addStretch(1)
 
         self.start_btn = QPushButton('Start', self)
         self.start_btn.clicked.connect(self.start_btn_clicked)
@@ -121,11 +122,11 @@ class SISMainWindow(QWidget):
         self.main_box.addLayout(self.info_box)
         self.main_box.addLayout(self.url_box)
         self.main_box.addLayout(self.login_box)
-        self.main_box.addLayout(self.path_box)
+        # self.main_box.addLayout(self.path_box)
         self.main_box.addLayout(self.forum_select_box)
         self.main_box.addLayout(self.pages_box)
         self.main_box.addLayout(self.thread_box)
-        self.main_box.addLayout(self.pic_box)
+        # self.main_box.addLayout(self.pic_box)
         self.main_box.addWidget(self.start_btn)
 
         self.output_box = QVBoxLayout()
@@ -147,6 +148,8 @@ class SISMainWindow(QWidget):
         self.setLayout(self.allLayout)
 
         self.setWindowTitle('SIS Torrents Downloader v1.0 by Fyang (肥羊)')
+        self.setFixedWidth(680)
+        self.setMinimumHeight(600)
 
     def get_forum_address(self):
         with open('sis_addr.dat', 'r') as f:
@@ -177,9 +180,9 @@ class SISMainWindow(QWidget):
             QMessageBox().critical(self, 'URL error', 'In case the url is not correct, download failed\n'
                                                     '站点不可用，不能下载。')
             return
-        if self.path_line.text() == '':
-            QMessageBox().critical(self, 'Path error', 'Please provide correct saving direction.\n请输入正确的保存路径')
-            return
+        # if self.path_line.text() == '':
+        #     QMessageBox().critical(self, 'Path error', 'Please provide correct saving direction.\n请输入正确的保存路径')
+        #     return
         if self.pages_line.text().isdigit() is False:
             QMessageBox().critical(self, 'Pages error', 'How many pages you want to download?\n请输入正确的下载页数')
             return
@@ -210,8 +213,7 @@ class SISMainWindow(QWidget):
             self.progress_bar.setValue(0)
         self.progress_label.setText('{}/{}'.format(self.current_progress[0], self.max_topics[0]))
         if 'This thread topics collector done' in info:
-            th = SIS.SISTors(self.topics_generator, self.path_line.text() + self.forum_menu.currentText(),
-                             self.current_progress, next(self.tors_thread_name), int(self.pic_menu.currentText()),
+            th = SIS.SISTors(self.topics_generator, self.current_progress, next(self.tors_thread_name),
                              self.login_id_line.text(), self.login_pw_line.text(), self)
             th.send_text.connect(self.infoRec)
             th.start()
