@@ -1,47 +1,111 @@
 import SIS
-import os, requests
+import os, requests, sqlite3
 from PyQt5.QtWidgets import QWidget, QPushButton, QHBoxLayout, QVBoxLayout, QLabel, QComboBox, QLineEdit, \
-    QFileDialog, QMessageBox, QProgressBar, QTextBrowser
+     QMessageBox, QProgressBar, QTextBrowser, QTabWidget, QTableWidget, QTableWidgetItem, QHeaderView, QDialog
+from PyQt5.QtCore import Qt
+from PyQt5.Qt import QPixmap
 
+Maximum_Torrent_Download = 50
+Maximum_Picture_Download = 500
 
 class SISMainWindow(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
-        #
-        # if os.name == 'nt':
-        #     self.path_slash = '\\'
-        # elif os.name == 'posix':
-        #     self.path_slash = '/'
-        # else:
-        #     if QMessageBox().critical(self, 'Error', 'Unknown Operate System\n未知系统错误') == QMessageBox.OK:
-        #         exit()
+        self.check_databases()
         self.init_ui()
+
+    def init_ui(self):
+        self.setToolTip('SIS Torrents Downloader '
+                        '\n第一会所论坛种子下载器')
+
+        self.downloaderWidget = DownloaderWidget()
+        self.browserWidget = BrowserWidget()
+
+        # tab widget
+        tabWidget = QTabWidget()
+        tabWidget.addTab(self.downloaderWidget, 'Downloader 下载器')
+        tabWidget.addTab(self.browserWidget, 'Browser 浏览器')
+        tabWidget.tabBarClicked.connect(self.whenTabClicked)
+
+        allLayout = QVBoxLayout()
+        allLayout.addWidget(tabWidget)
+
+        self.setLayout(allLayout)
+
+        self.setWindowTitle('SIS Torrents Downloader v1.0 by Fyang (肥羊)')
+        self.setMinimumWidth(800)
+        self.setMinimumHeight(600)
+
+    def check_databases(self):
+        if 'SISDB.sqlite' not in os.listdir('.'):
+            connect = sqlite3.connect('SISDB.sqlite')
+            connect.cursor().execute(
+                """
+                create table SIS(
+                tid text primary key not null,
+                type text not null,
+                name text not null,
+                mosaic integer,
+                thumbup integer,
+                date text,
+                size integer,
+                mtype text,
+                brief text)
+                """)
+            connect.cursor().execute(
+                """
+                create table SIStor(
+                tid text not null,
+                magnet text not null primary key)""")
+            connect.cursor().execute(
+                """
+                create table SISpic(
+                tid text not null,
+                picaddr text)
+                """)
+            connect.commit()
+            connect.close()
+
+    def whenTabClicked(self, n_tab):
+        if n_tab == 1:
+            connect = sqlite3.connect('SISDB.sqlite')
+            self.browserWidget.setCategory(
+                [x[0] for x in connect.cursor().execute('select type from sis group by type').fetchall()])
+            connect.close()
+
+
+class DownloaderWidget(QWidget):
+    def __init__(self, parent=None):
+        super(DownloaderWidget, self).__init__(parent)
         # this list store all topics that download from topic_downloader thread.
         self.topics_pool = []
+        self.sqlqueries_pool = {'main': [], 'tor': [], 'pic': []}
+        self.sqloperator = SIS.SISSql(self.sqlqueries_pool)
+        self.sqloperator.start()
         self.topics_generator = None
         self.tors_thread_name = None
         self.current_progress = [0]
         self.max_topics = [0]
         self.thread_done = 0
         self.working_threads = 0
-        self.show()
+        self.initUI()
 
-    def init_ui(self):
-        self.setToolTip('SIS Torrents Downloader '
-                        '\n第一会所论坛种子下载器')
-
+    def initUI(self):
+        #################################################
+        # downloader stuff below
         self.info_box = QHBoxLayout()
         self.info_label = QLabel()
         self.info_label.setText('This application is supposed to private use, DO NOT share to anyone!'
-                           '\n考虑到法律问题，本软件仅作为个人学习研究使用，请不要向他人传播。\n')
+                                '\n考虑到法律问题，本软件仅作为个人学习研究使用，请不要向他人传播。\n')
         self.info_box.addWidget(self.info_label)
 
         self.url_box = QHBoxLayout()
         self.url_label_title = QLabel('SiS Address (站点地址) ')
         self.url_line = QLineEdit()
+        self.url_line.setMinimumWidth(260)
         self.url_line.setText(self.get_forum_address())
         self.url_label = QLabel()
-        self.url_label.setFixedWidth(50)
+        self.url_label.setFixedWidth(30)
         self.check_url()
         self.url_test_btn = QPushButton('Test(测试)')
         self.url_test_btn.clicked.connect(self.check_url)
@@ -49,7 +113,7 @@ class SISMainWindow(QWidget):
         self.url_box.addWidget(self.url_line)
         self.url_box.addWidget(self.url_label)
         self.url_box.addWidget(self.url_test_btn)
-
+        self.url_box.addStretch(100)
 
         self.login_box = QHBoxLayout()
         self.login_id_label = QLabel('UserName')
@@ -60,20 +124,10 @@ class SISMainWindow(QWidget):
         self.login_box.addWidget(self.login_id_line)
         self.login_box.addWidget(self.login_pw_label)
         self.login_box.addWidget(self.login_pw_line)
-
-        # self.path_box = QHBoxLayout()
-        # self.path_label = QLabel('Save to (保存路径)')
-        # self.path_line = QLineEdit()
-        # self.path_loc_btn = QPushButton('...')
-        # self.path_loc_btn.setFixedWidth(40)
-        # self.path_loc_btn.clicked.connect(self.path_btn_clicked)
-        # self.path_line.setText(os.getcwd()+self.path_slash)
-        # self.path_box.addWidget(self.path_label)
-        # self.path_box.addWidget(self.path_line)
-        # self.path_box.addWidget(self.path_loc_btn)
+        self.login_box.addStretch(100)
 
         self.forum_select_box = QHBoxLayout()
-        self.forum_info = QLabel('Which one (选择子版块)')
+        self.forum_info = QLabel('Choose sub-forum (选择子版块)')
         self.forum_menu = QComboBox()
         self.forum_menu.addItem('Asia Uncensored Authorship Seed 亚洲无码原创区')
         self.forum_menu.addItem('Asia Censored Authorship Seed 亚洲有码原创区')
@@ -83,11 +137,13 @@ class SISMainWindow(QWidget):
         self.forum_menu.addItem('Asia Censored Section 亚洲有码转帖区')
         self.forum_menu.addItem('Western Uncensored 欧美无码转帖区')
         self.forum_menu.addItem('Anime Fans Castle 成人游戏动漫转帖区')
+        self.forum_menu.setMaximumWidth(350)
         self.forum_select_box.addWidget(self.forum_info)
         self.forum_select_box.addWidget(self.forum_menu)
+        self.forum_select_box.addStretch(1)
 
         self.pages_box = QHBoxLayout()
-        self.pages_label = QLabel("How many pages (下载页数，每页有30-40个种子)")
+        self.pages_label = QLabel("How many pages to download (下载页数，每页有30-40个种子)")
         self.pages_line = QLineEdit()
         self.pages_line.setText('1')
         self.pages_line.setFixedWidth(30)
@@ -96,23 +152,13 @@ class SISMainWindow(QWidget):
         self.pages_box.addStretch(1)
 
         self.thread_box = QHBoxLayout()
-        self.thread_label = QLabel('How many download threads (开启线程数，线程太多容易崩溃)')
+        self.thread_label = QLabel('How many downloading threads (开启线程数，线程太多容易崩溃)')
         self.thread_menu = QComboBox()
         for each in range(1, 11):
             self.thread_menu.addItem(str(each))
         self.thread_box.addWidget(self.thread_label)
         self.thread_box.addWidget(self.thread_menu)
         self.thread_box.addStretch(1)
-
-        # self.pic_box = QHBoxLayout()
-        # self.pic_label = QLabel('How many pictures you\'d like to download in each topic.'
-        #                         '\n(每个主题下载多少影片介绍图片，图越多耗时越久)')
-        # self.pic_menu = QComboBox()
-        # for each in range(0, 11):
-        #     self.pic_menu.addItem(str(each))
-        # self.pic_box.addWidget(self.pic_label)
-        # self.pic_box.addWidget(self.pic_menu)
-        # self.pic_box.addStretch(1)
 
         self.start_btn = QPushButton('Start', self)
         self.start_btn.clicked.connect(self.start_btn_clicked)
@@ -122,16 +168,14 @@ class SISMainWindow(QWidget):
         self.main_box.addLayout(self.info_box)
         self.main_box.addLayout(self.url_box)
         self.main_box.addLayout(self.login_box)
-        # self.main_box.addLayout(self.path_box)
         self.main_box.addLayout(self.forum_select_box)
         self.main_box.addLayout(self.pages_box)
         self.main_box.addLayout(self.thread_box)
-        # self.main_box.addLayout(self.pic_box)
         self.main_box.addWidget(self.start_btn)
 
         self.output_box = QVBoxLayout()
         self.output_window = QTextBrowser()
-        self.output_window.setFixedWidth(640)
+        self.output_window.setMinimumWidth(640)
         self.progress_bar = QProgressBar()
         self.progress_bar.setRange(0, 100)
         self.progress_label = QLabel()
@@ -141,15 +185,13 @@ class SISMainWindow(QWidget):
         self.output_box.addWidget(self.output_window)
         self.output_box.addLayout(self.progress_box)
 
-        self.allLayout = QVBoxLayout()
-        self.allLayout.addLayout(self.main_box)
-        self.allLayout.addLayout(self.output_box)
+        downloaderLayout = QVBoxLayout()
+        downloaderLayout.addLayout(self.main_box)
+        downloaderLayout.addLayout(self.output_box)
 
-        self.setLayout(self.allLayout)
-
-        self.setWindowTitle('SIS Torrents Downloader v1.0 by Fyang (肥羊)')
-        self.setFixedWidth(680)
-        self.setMinimumHeight(600)
+        self.setLayout(downloaderLayout)
+        # downloader stuff above
+        #################################################
 
     def get_forum_address(self):
         with open('sis_addr.dat', 'r') as f:
@@ -162,27 +204,16 @@ class SISMainWindow(QWidget):
                 f.write(self.url_line.text())
         else:
             self.url_label.setText('Failed')
-            failed_msg = 'The address is not available now, try other one.' \
-                         '\nPlease keep the address form: http://example/forum/' \
+            failed_msg = 'The address is not available now, try to find other one.' \
+                         '\nAddress must be under the correct form: http://example/forum/' \
                          '\n前论坛地址已经不可用了，请输入新的地址。\n新地址输入，请务必保持正确的格式，包括符号！'
-            QMessageBox().warning(self, 'Address Failed', failed_msg)
-
-    def path_btn_clicked(self):
-        path = QFileDialog.getExistingDirectory()
-        if os.name == 'nt':
-            path = path.replace('/', '\\')
-        if path == '':
-            return
-        self.path_line.setText(path+self.path_slash)
+            QMessageBox().warning(self, 'Address Failed', failed_msg, QMessageBox.Ok)
 
     def start_btn_clicked(self):
         if 'Failed' in self.url_label.text():
             QMessageBox().critical(self, 'URL error', 'In case the url is not correct, download failed\n'
-                                                    '站点不可用，不能下载。')
+                                                      '站点不可用，不能下载。')
             return
-        # if self.path_line.text() == '':
-        #     QMessageBox().critical(self, 'Path error', 'Please provide correct saving direction.\n请输入正确的保存路径')
-        #     return
         if self.pages_line.text().isdigit() is False:
             QMessageBox().critical(self, 'Pages error', 'How many pages you want to download?\n请输入正确的下载页数')
             return
@@ -195,12 +226,12 @@ class SISMainWindow(QWidget):
         # create a generator from above list, provide to torrents_downloader threads co-work.
         self.topics_generator = (x for x in self.topics_pool)
         # create a generator, provide to torrents_downloader's name.
-        self.tors_thread_name = (name for name in range(1, 30))
+        self.tors_thread_name = (name for name in range(1, 100))
         # 生成一个generator, 提供给线程协同下载topics
-        pages_url = (self.url_line.text() + self.sub_forum_addr() + '{}.html'.format(each)
-                         for each in range(1, int(self.pages_line.text()) + 1))
+        pages_generator = (self.url_line.text() + self.sub_forum_addr() + '{}.html'.format(each)
+                     for each in range(1, int(self.pages_line.text()) + 1))
         for each in range(int(self.thread_menu.currentText())):
-            td = SIS.SISTopic(pages_url, self.topics_pool, self.max_topics,
+            td = SIS.SISTopic(pages_generator, self.topics_pool, self.max_topics,
                               self.login_id_line.text(), self.login_pw_line.text(), self)
             td.send_text.connect(self.infoRec)
             td.start()
@@ -208,12 +239,13 @@ class SISMainWindow(QWidget):
     def infoRec(self, info):
         self.output_window.append(info)
         try:
-            self.progress_bar.setValue(self.current_progress[0]*100/self.max_topics[0])
+            self.progress_bar.setValue(self.current_progress[0] * 100 / self.max_topics[0])
         except ZeroDivisionError:
             self.progress_bar.setValue(0)
         self.progress_label.setText('{}/{}'.format(self.current_progress[0], self.max_topics[0]))
         if 'This thread topics collector done' in info:
-            th = SIS.SISTors(self.topics_generator, self.current_progress, next(self.tors_thread_name),
+            th = SIS.SISTors(self.topics_generator, self.sqlqueries_pool,
+                             self.current_progress, next(self.tors_thread_name),
                              self.login_id_line.text(), self.login_pw_line.text(), self)
             th.send_text.connect(self.infoRec)
             th.start()
@@ -222,54 +254,161 @@ class SISMainWindow(QWidget):
             if self.thread_done == self.working_threads:
                 self.start_btn.setEnabled(True)
 
-        #
-        # if pages < self.current_working_threads:
-        #     QMessageBox().critical(self, 'Threads error', 'Threads must less than pages, reset again.\n'
-        #                                                 '线程数需要小于页数，请重新设置')
-        #     return
-        # # calculating the pages for each thread
-        # divined_pages = int(pages / self.current_working_threads)
-        # start_page = 1
-        # usrnm = self.login_id_line.text()
-        # usrpw = self.login_pw_line.text()
-        # path = self.path_line.text()
-        # pics = int(self.pic_menu.currentText())
-        # self.current_progress = 0
-        # self.max_topics = 0
-        # self.threads_finished = 0
-        # for e in range(self.current_working_threads):
-        #     end_page = start_page + divined_pages - 1
-        #     thread = SIS.SISObj(e, self.url_line.text(), subforum, usrnm, usrpw, path, start_page, end_page, pics, self)
-        #     thread.trigger_text.connect(self.update_info_window)
-        #     thread.trigger_progress.connect(self.progress_received)
-        #     thread.trigger_sent_all_topics_quantity.connect(self.topics_quantity_received)
-        #     thread.trigger_done.connect(self.thread_finished)
-        #     thread.start()
-        #     start_page += divined_pages
-
-    # def thread_finished(self, done):
-    #     self.threads_finished += done
-    #     if self.threads_finished == self.current_working_threads:
-    #         self.start_btn.setEnabled(True)
-    #         self.threads_finished = 0
-    #         self.current_working_threads = 0
-
     def sub_forum_addr(self):
         index = self.forum_menu.currentIndex()
-        if index == 0:
-            return 'forum-143-'
-        elif index == '1':
-            return 'forum-230-'
-        elif index == '2':
-            return 'forum-229-'
-        elif index == '3':
-            return 'forum-231-'
-        elif index == '4':
-            return 'forum-25-'
-        elif index == '5':
-            return 'forum-58-'
-        elif index == '6':
-            return 'forum-77-'
-        elif index == '7':
-            return 'forum-27-'
+        return {0: 'forum-143-', 1: 'forum-230-', 2: 'forum-229-', 3: 'forum-231-',
+                4: 'forum-25-', 5: 'forum-58-', 6: 'forum-77-', 7: 'forum-27-'}[index]
+
+
+class BrowserWidget(QWidget):
+    def __init__(self, parent=None):
+        super(BrowserWidget, self).__init__(parent)
+        self.initUI()
+
+    def initUI(self):
+        # browser stuff below
+        b_menu_layout1 = QHBoxLayout()
+        self.b_search_line = QLineEdit()
+        self.b_search_line.setMinimumWidth(300)
+        self.b_category_combox = QComboBox()
+        self.b_mosaick_combox = QComboBox()
+        self.b_mosaick_combox.addItems(('所有', '无码', '有码', '不确定'))
+        self.b_start_load = QPushButton('Load 加载')
+        self.b_start_load.clicked.connect(self.startQuery)
+        b_menu_layout1.addWidget(self.b_search_line)
+        b_menu_layout1.addWidget(self.b_category_combox)
+        b_menu_layout1.addWidget(self.b_mosaick_combox)
+        b_menu_layout1.addWidget(self.b_start_load)
+        b_menu_layout1.addStretch(10)
+        self.b_table_view = QTableWidget()
+        self.b_table_view.itemClicked.connect(self.whenItemClicked)
+        self.b_table_view.setEditTriggers(QTableWidget.NoEditTriggers)
+        self.b_table_view.setSortingEnabled(True)
+        self.b_table_view.setSelectionBehavior(QTableWidget.SelectRows)
+        self.b_table_view.setSelectionMode(QTableWidget.SingleSelection)
+        self.b_table_view.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+
+        b_layout = QVBoxLayout()
+        b_layout.addLayout(b_menu_layout1)
+        b_layout.addWidget(self.b_table_view)
+
+        self.setLayout(b_layout)
+        # browser stuff above
+        #################################################
+
+    def setCategory(self, catey):
+        self.b_category_combox.addItem('所有')
+        self.b_category_combox.addItems(catey)
+
+    def startQuery(self):
+        query = 'SELECT * FROM SIS'
+        if self.b_search_line.text() is not '':
+            query += ' WHERE name GLOB "*{}*"'.format(self.b_search_line.text())
+        if self.b_category_combox.currentIndex() != 0:
+            if 'WHERE' in query:
+                query += ' AND type="{}"'.format(self.b_category_combox.currentText())
+            else:
+                query += ' WHERE type="{}"'.format(self.b_category_combox.currentText())
+        if self.b_mosaick_combox.currentIndex() != 0:
+            if 'WHERE' in query:
+                query += ' AND mosaic={}'.format(self.b_category_combox.currentIndex()-1)
+            else:
+                query += ' WHERE mosaic={}'.format(self.b_category_combox.currentIndex()-1)
+        connect = sqlite3.connect('SISDB.sqlite')
+        result = connect.cursor().execute(query).fetchall()
+        connect.close()
+        self.placeItem(result)
+
+    def placeItem(self, items):
+        self.b_table_view.clear()
+        self.b_table_view.setColumnCount(10)
+        self.b_table_view.setHorizontalHeaderLabels(('类型', '片名', '码', '赞', '日期',
+                                                     '容量', '格式', '简要', '磁力链', '截图'))
+        self.b_table_view.setRowCount(len(items))
+        for row, each in enumerate(items):
+            for _n, item in enumerate(each[1:]):
+                tableitem = QTableWidgetItem()
+                tableitem.setTextAlignment(Qt.AlignCenter)
+                if _n == 0:
+                    tableitem.setData(Qt.DisplayRole, item)
+                    tableitem.setToolTip(item)
+                elif _n == 7:
+                    if 'NULL' not in item:
+                        tableitem.setText('...')
+                        tableitem.setToolTip(item)
+                else:
+                    tableitem.setData(Qt.DisplayRole, item)
+                self.b_table_view.setItem(row, _n, tableitem)
+            connect = sqlite3.connect('SISDB.sqlite')
+            tors = [x[0] for x in connect.cursor().execute('SELECT magnet from SIStor WHERE tid=?', (each[0],)).fetchall()]
+            pics = [x[0] for x in connect.cursor().execute('SELECT picaddr from SISpic WHERE tid=?', (each[0],)).fetchall()]
+            connect.close()
+
+            tableitem = QTableWidgetItem('打开')
+            tableitem.setTextAlignment(Qt.AlignCenter)
+            tableitem.setData(1000, tors)
+            self.b_table_view.setItem(row, 8, tableitem)
+
+            if pics:
+                tableitem = QTableWidgetItem('显示')
+                tableitem.setTextAlignment(Qt.AlignCenter)
+                tableitem.setData(1000, pics)
+                self.b_table_view.setItem(row, 9, tableitem)
+
+        for _n in range(10):
+            if _n == 1:
+                continue
+            self.b_table_view.horizontalHeader().setSectionResizeMode(_n, QHeaderView.ResizeToContents)
+
+    def whenItemClicked(self, item):
+        if item.column() == 8:
+            sw = SISSubWin(self.b_table_view.item(item.row(), 1).data(Qt.DisplayRole), item.data(1000), 't', self)
+            sw.show()
+        if item.column() == 9 and item.data(1000) is not None and '显示' in item.data(Qt.DisplayRole):
+            item.setText('稍等')
+            item.setForeground(Qt.gray)
+            sw = item.data(1000)
+            picjob = {'total': len(sw), 'local': 0, 'job': [], 'name': self.b_table_view.item(item.row(), 1).data(Qt.DisplayRole)}
+            for each in sw:
+                pth = SIS.SISPicLoader(picjob, each)
+                pth.jobDone.connect(self.loadPictures)
+                pth.start()
+
+    def loadPictures(self, pic_job):
+        row = self.b_table_view.findItems(pic_job['name'], Qt.MatchExactly)[0].row()
+        self.b_table_view.item(row, 9).setText('显示')
+        self.b_table_view.item(row, 9).setForeground(Qt.black)
+        pwin = SISSubWin(pic_job['name'], pic_job['job'], 'p', self)
+        pwin.show()
+
+
+class SISSubWin(QDialog):
+    def __init__(self, title, items, flag, parent=None):
+        super(SISSubWin, self).__init__(parent)
+        self.setWindowTitle(title)
+        layout = QVBoxLayout()
+        table = QTableWidget()
+        table.setEditTriggers(QTableWidget.NoEditTriggers)
+        table.setColumnCount(1)
+        table.setRowCount(len(items))
+        if flag == 't':
+            table.setHorizontalHeaderLabels(('磁力链',))
+            for row, each in enumerate(items):
+                item = QTableWidgetItem(each)
+                table.setItem(row, 0, item)
+        elif flag == 'p':
+            table.setHorizontalHeaderLabels(('图片',))
+            for row, each in enumerate(items):
+                pix = QPixmap()
+                pix.loadFromData(each)
+                label = QLabel()
+                label.setPixmap(pix)
+                table.setCellWidget(row, 0, label)
+        table.resizeColumnsToContents()
+        table.resizeRowsToContents()
+        layout.addWidget(table)
+        self.setLayout(layout)
+
+
+
 
