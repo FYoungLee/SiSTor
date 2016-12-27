@@ -12,13 +12,11 @@ import requests
 import random
 import time
 import sqlite3
+import flatbencode
 from PyQt5.QtCore import QThread
 from PyQt5.QtCore import pyqtSignal
 from PyQt5.QtCore import QReadWriteLock
 import tor2mag
-
-Maximum_Torrent_Thread = 50
-Maximum_Picture_Thread = 500
 
 
 class SISThread(QThread):
@@ -32,11 +30,11 @@ class SISThread(QThread):
 class TheDownloader(SISThread):
     send_text = pyqtSignal(str)
 
-    def __init__(self, loginname=None, password=None, parent=None):
+    def __init__(self, cookies, parent=None):
         super(TheDownloader, self).__init__(parent=parent)
         with open('sis_addr.dat', 'r') as f:
             self.baseurl = f.readline()
-        self.cookies = self.get_sis_cookies(loginname, password)
+        self.cookies = cookies
 
     def get_headers(self):
         UserAgents = ['Mozilla/5.0 (Windows; U; Windows NT 5.1; en-US; rv:1.9a2pre) Gecko/20061231 Minefield/3.0a2pre',
@@ -46,20 +44,6 @@ class TheDownloader(SISThread):
                       'Mozilla/4.0 (compatible; MSIE 5.0; Linux 2.4.20-686 i686) Opera 6.02  [en]']
         return random.choice(UserAgents)
 
-    def get_sis_cookies(self, loginname, password):
-        if loginname is '' or password is '':
-            return None
-        login_data = {'action': 'login',
-                      'loginsubmit': 'true',
-                      '62838ebfea47071969cead9d87a2f1f7': loginname,
-                      'c95b1308bda0a3589f68f75d23b15938': password}
-
-        cookies = requests.post(self.baseurl + 'logging.php', data=login_data).cookies
-        if len(cookies.values()[0]) > 10:
-            return cookies
-        else:
-            return None
-
     def make_soup(self, url):
         try_times = 5
         while try_times:
@@ -68,7 +52,7 @@ class TheDownloader(SISThread):
                                         timeout=10)
                 return BeautifulSoup(response.content.decode('gbk', 'ignore'), 'lxml')
             except:
-                self.emitInfo('Time out on <a href="{}">this</a>, try again.'.format(url))
+                self.emitInfo('Time out on <a href="{}">{}</a>, try again.'.format(url, url.split('/')[-1]))
                 time.sleep(3)
                 try_times -= 1
         return None
@@ -80,12 +64,10 @@ class TheDownloader(SISThread):
 class SISTopic(TheDownloader):
     """ this object intend to download all topics in the given forum """
 
-    def __init__(self, pages_generator, topics_pool, maxtopics, loginname=None, password=None, parent=None):
-        super(SISTopic, self).__init__(loginname, password, parent)
+    def __init__(self, pages_generator, topics_pool, cookies=None, parent=None):
+        super(SISTopic, self).__init__(cookies, parent)
         self.pages_generator = pages_generator
         self.thispool = topics_pool
-        self.thistopics = maxtopics
-
 
     def run(self):
         connectDB = sqlite3.connect('SISDB.sqlite')
@@ -98,7 +80,6 @@ class SISTopic(TheDownloader):
                 try:
                     self.locker.lockForWrite()
                     self.thispool.extend(newtpc)
-                    self.thistopics[0] += len(newtpc)
                 finally:
                     self.locker.unlock()
             except StopIteration:
@@ -144,23 +125,26 @@ class SISTopic(TheDownloader):
 
 
 class SISTors(TheDownloader):
-    def __init__(self, topic_job, sqlqueries_pool, topics_progress, loginname=None, password=None,
-                 parent=None):
-        super(SISTors, self).__init__(loginname, password, parent)
-        self.this_topic_job = topic_job
+    thread_progress_signal = pyqtSignal(str)
+
+    def __init__(self, topics_generator, sqlqueries_pool, cookies=None, parent=None):
+        super(SISTors, self).__init__(cookies, parent)
+        self.topics_generator = topics_generator
         self.thisqueries_pool = sqlqueries_pool
         self.headers = self.get_headers()
-        self.progress = topics_progress
         try:
             os.mkdir(self.save_dir)
         except:
             pass
 
     def run(self):
-        try:
-            self.download_content_from_topic(self.this_topic_job)
-        except BaseException as err:
-            self.emitInfo('{}'.format(err))
+        while True:
+            try:
+                self.download_content_from_topic(next(self.topics_generator))
+                self.thread_progress_signal.emit('one thread finished')
+            except StopIteration:
+                self.thread_progress_signal.emit('topic thread done')
+                return
 
     def download_content_from_topic(self, topics):
         tar_page = self.baseurl + topics[0]
@@ -186,32 +170,35 @@ class SISTors(TheDownloader):
             return
 
         self.insertToQueriesPool(t_id, t_name, t_type, t_mosaic, t_thumbup, t_date, t_size, t_mtype, page_info)
-        try:
-            self.locker.lockForWrite()
-            self.progress[0] += 1
-        finally:
-            self.locker.unlock()
+
 
     def insertToQueriesPool(self, tid, tname, ttype, tmosaic, tthumbup, tdate, tsize, tmtype, page_info):
-        page_tors = page_info.find_all('a', {'href': re.compile(r'attachment')})
+        try:
+            page_tors = page_info.find_all('a', {'href': re.compile(r'attachment')})
+        except AttributeError:
+            return
         if page_tors is None:
-            raise BaseException('No torrent in {}'.format(tname))
+            return
         # download torrents
+        tor_errs = 0
         for each_attach in page_tors:
             try:
-                print('Download {}'.format(each_attach.text))
+                # print('Download {}'.format(each_attach.text))
                 torbyte = requests.get(self.baseurl + each_attach['href']).content
                 magaddr = tor2mag.decodeTor(torbyte)
                 self.locker.lockForWrite()
                 self.thisqueries_pool['tor'].append((tid, magaddr))
-            except BaseException as err:
+            except (requests.exceptions.RequestException, flatbencode.DecodingError) as err:
                 print('{} {}'.format(each_attach, err))
+                tor_errs += 1
                 continue
             finally:
                 self.locker.unlock()
+        if tor_errs == len(page_tors):
+            return
         try:
             tbrief = page_info.find('div', {'class': 't_msgfont'}).text
-        except:
+        except AttributeError:
             tbrief = '没有'
         if tmosaic == 2:
             if '无码' in tname or '无码' in tbrief or '無碼' in tbrief or '無碼' in tname:
@@ -233,68 +220,95 @@ class SISTors(TheDownloader):
                 self.locker.unlock()
 
 
-class SISThreadControler(SISThread):
+class SISSql(SISThread):
     """ operate the databases"""
 
-    def __init__(self, sqlque, parent=None):
-        super(SISThreadControler, self).__init__(parent)
+    def __init__(self, sqlque, pics_pool_for_downloading, parent=None):
+        super(SISSql, self).__init__(parent)
         self.queries = sqlque
+        self.pics_pool_for_downloading = pics_pool_for_downloading
+        self.pics_pool_for_updating_db = []
 
     def run(self):
         while True:
             connect = sqlite3.connect('SISDB.sqlite')
             query = connect.cursor().execute
             try:
-                try:
-                    self.locker.lockForWrite()
-                    picinfo = self.queries['pic'].pop()
-                    query('INSERT INTO SISpic VALUES(?, ?)', (picinfo[0], picinfo[1]))
-                except IndexError:
-                    pass
-                finally:
-                    self.locker.unlock()
+                if len(self.queries['pic']):
+                    try:
+                        self.locker.lockForWrite()
+                        picinfo = self.queries['pic'].pop()
+                        query('INSERT INTO SISpic (tid, picaddr) VALUES(?, ?)', (picinfo[0], picinfo[1]))
+                        self.pics_pool_for_downloading.append(picinfo)
+                    except sqlite3.IntegrityError as err:
+                        print(err)
+                    finally:
+                        self.locker.unlock()
+                if len(self.queries['tor']):
+                    try:
+                        self.locker.lockForWrite()
+                        torinfo = self.queries['tor'].pop()
+                        query('INSERT INTO SIStor VALUES(?, ?)', (torinfo[0], torinfo[1]))
+                    except sqlite3.IntegrityError as err:
+                        print(err)
+                    finally:
+                        self.locker.unlock()
 
-                try:
-                    self.locker.lockForWrite()
-                    torinfo = self.queries['tor'].pop()
-                    query('INSERT INTO SIStor VALUES(?, ?)', (torinfo[0], torinfo[1]))
-                except IndexError:
-                    pass
-                finally:
-                    self.locker.unlock()
-                try:
-                    self.locker.lockForWrite()
-                    maininfo = self.queries['main'].pop()
-                    query('INSERT INTO SIS VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)',
-                          (maininfo[0], maininfo[1], maininfo[2], maininfo[3],
-                           maininfo[4], maininfo[5], maininfo[6], maininfo[7], maininfo[8]))
-                except IndexError:
-                    pass
-                finally:
-                    self.locker.unlock()
-
+                if len(self.queries['main']):
+                    try:
+                        self.locker.lockForWrite()
+                        maininfo = self.queries['main'].pop()
+                        query('INSERT INTO SIS VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)',
+                              (maininfo[0], maininfo[1], maininfo[2], maininfo[3],
+                               maininfo[4], maininfo[5], maininfo[6], maininfo[7], maininfo[8]))
+                    except sqlite3.IntegrityError as err:
+                        print(err)
+                    finally:
+                        self.locker.unlock()
+                if len(self.pics_pool_for_updating_db):
+                    try:
+                        self.locker.lockForWrite()
+                        pic = self.pics_pool_for_updating_db.pop()
+                        if pic[0]:
+                            query('UPDATE SISpic SET picb=? WHERE picaddr=?', (pic[0], pic[1]))
+                            print('Updated new picture {}'.format(pic[1]))
+                        else:
+                            query('DELETE FROM SISpic WHERE picaddr=?', (pic[1],))
+                            print('Bad picture deleted {}'.format(pic[1]))
+                    except sqlite3.IntegrityError as err:
+                        print(err)
+                    finally:
+                        self.locker.unlock()
             finally:
                 connect.commit()
                 connect.close()
 
+    def picUpdate(self, picpak):
+        self.pics_pool_for_updating_db.append(picpak)
 
-class SISPicLoader(QThread):
-    jobDone = pyqtSignal(dict, name='picjob')
 
-    def __init__(self, task, target, parent=None):
+class SISPicLoader(SISThread):
+    picpak_broadcast = pyqtSignal(tuple)
+    thread_progress_signal = pyqtSignal(str)
+
+    def __init__(self, pics_generator, parent=None):
         super(SISPicLoader, self).__init__(parent)
-        self.local_task = task
-        self.local_target = target
+        self.pics_generator = pics_generator
 
     def run(self):
-        try_times = 5
-        while try_times:
+        while True:
             try:
-                bpic = requests.get(self.local_target, timeout=60).content
-                self.local_task['job'].append(bpic)
-                self.local_task['local'] += 1
-                if self.local_task['local'] == self.local_task['total']:
-                    self.jobDone.emit(self.local_task)
-                return
-            except:
-                try_times -= 1
+                getjob = next(self.pics_generator)
+            except StopIteration:
+                print('Picture thread waitting for job.')
+                time.sleep(3)
+                continue
+            try:
+                bpic = requests.get(getjob[1], timeout=60).content
+                self.picpak_broadcast.emit((bpic, getjob[1]))
+            except requests.exceptions.RequestException:
+                self.picpak_broadcast.emit((None, getjob[1]))
+            finally:
+                self.thread_progress_signal.emit('one picture finished')
+
+
