@@ -14,10 +14,22 @@ import time
 import sqlite3
 from PyQt5.QtCore import QThread
 from PyQt5.QtCore import pyqtSignal
+from PyQt5.QtCore import QReadWriteLock
 import tor2mag
 
+Maximum_Torrent_Thread = 50
+Maximum_Picture_Thread = 500
 
-class TheDownloader(QThread):
+
+class SISThread(QThread):
+    locker = QReadWriteLock()
+
+    def __init__(self, parent=None):
+        super(SISThread, self).__init__(parent)
+        self.finished.connect(self.deleteLater)
+
+
+class TheDownloader(SISThread):
     send_text = pyqtSignal(str)
 
     def __init__(self, loginname=None, password=None, parent=None):
@@ -76,7 +88,6 @@ class SISTopic(TheDownloader):
 
 
     def run(self):
-        self.emitInfo('Topics collecting, 开始搜集所有帖子地址...')
         connectDB = sqlite3.connect('SISDB.sqlite')
         allUrlDownloaded = [x[0] for x in connectDB.cursor().execute('SELECT tid FROM SIS').fetchall()]
         connectDB.close()
@@ -84,10 +95,13 @@ class SISTopic(TheDownloader):
             try:
                 __tps = self.extract_info_from_page(next(self.pages_generator))
                 newtpc = list(filter(lambda x: x[0].split('.')[0] not in allUrlDownloaded, __tps))
-                self.thispool.extend(newtpc)
-                self.thistopics[0] += len(newtpc)
+                try:
+                    self.locker.lockForWrite()
+                    self.thispool.extend(newtpc)
+                    self.thistopics[0] += len(newtpc)
+                finally:
+                    self.locker.unlock()
             except StopIteration:
-                self.emitInfo('This thread topics collector done, 该线程帖子搜集完毕.')
                 return
 
     def extract_info_from_page(self, page):
@@ -130,26 +144,23 @@ class SISTopic(TheDownloader):
 
 
 class SISTors(TheDownloader):
-    def __init__(self, topics_pool, sqlqueries_pool, current_progress, myname, loginname=None, password=None,
+    def __init__(self, topic_job, sqlqueries_pool, topics_progress, loginname=None, password=None,
                  parent=None):
         super(SISTors, self).__init__(loginname, password, parent)
-        self.thispool = topics_pool
+        self.this_topic_job = topic_job
         self.thisqueries_pool = sqlqueries_pool
         self.headers = self.get_headers()
-        self.progress = current_progress
-        self.myname = myname
+        self.progress = topics_progress
         try:
             os.mkdir(self.save_dir)
         except:
             pass
 
     def run(self):
-        while True:
-            try:
-                self.download_content_from_topic(next(self.thispool))
-            except StopIteration:
-                self.emitInfo('{} thread has finished, 该线程种子下载完了.'.format(self.myname))
-                return
+        try:
+            self.download_content_from_topic(self.this_topic_job)
+        except BaseException as err:
+            self.emitInfo('{}'.format(err))
 
     def download_content_from_topic(self, topics):
         tar_page = self.baseurl + topics[0]
@@ -165,61 +176,68 @@ class SISTors(TheDownloader):
         elif 'G' in t_size:
             t_size = int(float(t_size.replace('G', '').replace('B', '')) * 1000)
         t_mtype = topics[7]
-        self.emitInfo('({}) Downloading {}'.format(self.myname, t_name))
+        self.emitInfo('Downloading {}'.format(t_name))
         pagesoup = self.make_soup(tar_page)
         # get movie information
         try:
             page_info = pagesoup.find('td', {'class': 'postcontent'})
         except AttributeError:
-            self.emitInfo('({}) {} failed.'.format(self.myname, tar_page))
+            self.emitInfo('{} failed.'.format(tar_page))
             return
+
+        self.insertToQueriesPool(t_id, t_name, t_type, t_mosaic, t_thumbup, t_date, t_size, t_mtype, page_info)
         try:
-            self.insertToQueriesPool(t_id, t_name, t_type, t_mosaic, t_thumbup, t_date, t_size, t_mtype, page_info)
-        except BaseException as err:
-            self.emitInfo(err)
-            return
-        self.progress[0] += 1
+            self.locker.lockForWrite()
+            self.progress[0] += 1
+        finally:
+            self.locker.unlock()
 
     def insertToQueriesPool(self, tid, tname, ttype, tmosaic, tthumbup, tdate, tsize, tmtype, page_info):
         page_tors = page_info.find_all('a', {'href': re.compile(r'attachment')})
         if page_tors is None:
-            raise BaseException('Broken page (页面错误)')
+            raise BaseException('No torrent in {}'.format(tname))
         # download torrents
         for each_attach in page_tors:
             try:
                 print('Download {}'.format(each_attach.text))
                 torbyte = requests.get(self.baseurl + each_attach['href']).content
                 magaddr = tor2mag.decodeTor(torbyte)
+                self.locker.lockForWrite()
                 self.thisqueries_pool['tor'].append((tid, magaddr))
             except BaseException as err:
                 print('{} {}'.format(each_attach, err))
                 continue
+            finally:
+                self.locker.unlock()
         try:
             tbrief = page_info.find('div', {'class': 't_msgfont'}).text
         except:
-            tbrief = 'NULL'
+            tbrief = '没有'
         if tmosaic == 2:
             if '无码' in tname or '无码' in tbrief or '無碼' in tbrief or '無碼' in tname:
                 tmosaic = 0
             elif '有码' in tname or '有码' in tbrief or '有碼' in tname or '有碼' in tbrief:
                 tmosaic = 1
-        self.thisqueries_pool['main'].append((tid, ttype, tname, tmosaic, tthumbup, tdate, tsize, tmtype, tbrief))
+        try:
+            self.locker.lockForWrite()
+            self.thisqueries_pool['main'].append((tid, ttype, tname, tmosaic, tthumbup, tdate, tsize, tmtype, tbrief))
+        finally:
+            self.locker.unlock()
 
         for each_pic in page_info.find_all('img', {'src': re.compile(r'jpg|png')}):
             pic_url = each_pic['src']
             try:
-                if requests.head(pic_url, timeout=5).ok:
-                    self.thisqueries_pool['pic'].append((tid, pic_url))
-            except BaseException:
-                print('Broken picture: {} (ignored)'.format(pic_url))
-                continue
+                self.locker.lockForWrite()
+                self.thisqueries_pool['pic'].append((tid, pic_url))
+            finally:
+                self.locker.unlock()
 
 
-class SISSql(QThread):
+class SISThreadControler(SISThread):
     """ operate the databases"""
 
     def __init__(self, sqlque, parent=None):
-        super(SISSql, self).__init__(parent)
+        super(SISThreadControler, self).__init__(parent)
         self.queries = sqlque
 
     def run(self):
@@ -227,18 +245,34 @@ class SISSql(QThread):
             connect = sqlite3.connect('SISDB.sqlite')
             query = connect.cursor().execute
             try:
-                picinfo = self.queries['pic'].pop()
-                query('INSERT INTO SISpic VALUES(?, ?)', (picinfo[0], picinfo[1]))
-                torinfo = self.queries['tor'].pop()
-                query('INSERT INTO SIStor VALUES(?, ?)', (torinfo[0], torinfo[1]))
-                maininfo = self.queries['main'].pop()
-                query('INSERT INTO SIS VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)',
-                           (maininfo[0], maininfo[1], maininfo[2], maininfo[3],
-                            maininfo[4], maininfo[5], maininfo[6], maininfo[7], maininfo[8]))
-            except IndexError:
-                if 0 == len(self.queries['pic']):
-                    # print('No more queries in pool, let me take a break.')
-                    time.sleep(5)
+                try:
+                    self.locker.lockForWrite()
+                    picinfo = self.queries['pic'].pop()
+                    query('INSERT INTO SISpic VALUES(?, ?)', (picinfo[0], picinfo[1]))
+                except IndexError:
+                    pass
+                finally:
+                    self.locker.unlock()
+
+                try:
+                    self.locker.lockForWrite()
+                    torinfo = self.queries['tor'].pop()
+                    query('INSERT INTO SIStor VALUES(?, ?)', (torinfo[0], torinfo[1]))
+                except IndexError:
+                    pass
+                finally:
+                    self.locker.unlock()
+                try:
+                    self.locker.lockForWrite()
+                    maininfo = self.queries['main'].pop()
+                    query('INSERT INTO SIS VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)',
+                          (maininfo[0], maininfo[1], maininfo[2], maininfo[3],
+                           maininfo[4], maininfo[5], maininfo[6], maininfo[7], maininfo[8]))
+                except IndexError:
+                    pass
+                finally:
+                    self.locker.unlock()
+
             finally:
                 connect.commit()
                 connect.close()

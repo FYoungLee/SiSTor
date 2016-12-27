@@ -2,11 +2,9 @@ import SIS
 import os, requests, sqlite3
 from PyQt5.QtWidgets import QWidget, QPushButton, QHBoxLayout, QVBoxLayout, QLabel, QComboBox, QLineEdit, \
      QMessageBox, QProgressBar, QTextBrowser, QTabWidget, QTableWidget, QTableWidgetItem, QHeaderView, QDialog
-from PyQt5.QtCore import Qt
+from PyQt5.QtCore import Qt, pyqtSignal
 from PyQt5.Qt import QPixmap
 
-Maximum_Torrent_Download = 50
-Maximum_Picture_Download = 500
 
 class SISMainWindow(QWidget):
     def __init__(self, parent=None):
@@ -61,7 +59,8 @@ class SISMainWindow(QWidget):
                 """
                 create table SISpic(
                 tid text not null,
-                picaddr text)
+                picaddr text,
+                picb blob)
                 """)
             connect.commit()
             connect.close()
@@ -75,19 +74,19 @@ class SISMainWindow(QWidget):
 
 
 class DownloaderWidget(QWidget):
+    topics_signal = pyqtSignal(str, name='topics')
+
     def __init__(self, parent=None):
         super(DownloaderWidget, self).__init__(parent)
         # this list store all topics that download from topic_downloader thread.
         self.topics_pool = []
         self.sqlqueries_pool = {'main': [], 'tor': [], 'pic': []}
-        self.sqloperator = SIS.SISSql(self.sqlqueries_pool)
+        self.sqloperator = SIS.SISThreadControler(self.sqlqueries_pool)
         self.sqloperator.start()
-        self.topics_generator = None
-        self.tors_thread_name = None
-        self.current_progress = [0]
+        self.topics_generator = (x for x in range(1, 100000))
         self.max_topics = [0]
-        self.thread_done = 0
-        self.working_threads = 0
+        self.finished_topics = [0]
+        self.timerID = 0
         self.initUI()
 
     def initUI(self):
@@ -169,8 +168,8 @@ class DownloaderWidget(QWidget):
         self.main_box.addLayout(self.url_box)
         self.main_box.addLayout(self.login_box)
         self.main_box.addLayout(self.forum_select_box)
-        self.main_box.addLayout(self.pages_box)
-        self.main_box.addLayout(self.thread_box)
+        # self.main_box.addLayout(self.pages_box)
+        # self.main_box.addLayout(self.thread_box)
         self.main_box.addWidget(self.start_btn)
 
         self.output_box = QVBoxLayout()
@@ -214,27 +213,28 @@ class DownloaderWidget(QWidget):
             QMessageBox().critical(self, 'URL error', 'In case the url is not correct, download failed\n'
                                                       '站点不可用，不能下载。')
             return
-        if self.pages_line.text().isdigit() is False:
-            QMessageBox().critical(self, 'Pages error', 'How many pages you want to download?\n请输入正确的下载页数')
-            return
-        self.start_btn.setEnabled(False)
-        self.max_topics[0] = 0
-        self.current_progress[0] = 0
-        self.topics_pool = []
-        self.thread_done = 0
-        self.working_threads = int(self.thread_menu.currentText())
-        # create a generator from above list, provide to torrents_downloader threads co-work.
-        self.topics_generator = (x for x in self.topics_pool)
-        # create a generator, provide to torrents_downloader's name.
-        self.tors_thread_name = (name for name in range(1, 100))
-        # 生成一个generator, 提供给线程协同下载topics
-        pages_generator = (self.url_line.text() + self.sub_forum_addr() + '{}.html'.format(each)
-                     for each in range(1, int(self.pages_line.text()) + 1))
-        for each in range(int(self.thread_menu.currentText())):
-            td = SIS.SISTopic(pages_generator, self.topics_pool, self.max_topics,
-                              self.login_id_line.text(), self.login_pw_line.text(), self)
-            td.send_text.connect(self.infoRec)
-            td.start()
+        # if self.pages_line.text().isdigit() is False:
+        #     QMessageBox().critical(self, 'Pages error', 'How many pages you want to download?\n请输入正确的下载页数')
+        #     return
+        if 'Start' in self.start_btn.text():
+            self.start_btn.setText('Stop')
+            self.timerID = self.startTimer(1)
+
+            # 生成一个generator, 提供给线程协同下载topics
+            # pages_generator = (self.url_line.text() + self.sub_forum_addr() + '{}.html'.format(each)
+            #              for each in range(1, int(self.pages_line.text()) + 1))
+            # for each in range(int(self.thread_menu.currentText())):
+            #     td = SIS.SISTopic(pages_generator, self.topics_pool, self.max_topics,
+            #                       self.login_id_line.text(), self.login_pw_line.text(), self)
+            #     td.send_text.connect(self.infoRec)
+            #     td.start()
+        else:
+            self.start_btn.setText('Start')
+            self.killTimer(self.timerID)
+            self.topics_signal.emit('Stop')
+
+    def timerEvent(self, n):
+        print(n)
 
     def infoRec(self, info):
         self.output_window.append(info)
@@ -329,13 +329,19 @@ class BrowserWidget(QWidget):
             for _n, item in enumerate(each[1:]):
                 tableitem = QTableWidgetItem()
                 tableitem.setTextAlignment(Qt.AlignCenter)
-                if _n == 0:
+                if _n == 1:
                     tableitem.setData(Qt.DisplayRole, item)
                     tableitem.setToolTip(item)
+                elif _n == 2:
+                    if item == 0:
+                        tableitem.setText('无')
+                    elif item == 1:
+                        tableitem.setText('有')
+                    else:
+                        tableitem.setText('?')
                 elif _n == 7:
-                    if 'NULL' not in item:
-                        tableitem.setText('...')
-                        tableitem.setToolTip(item)
+                    tableitem.setText('...')
+                    tableitem.setToolTip(item)
                 else:
                     tableitem.setData(Qt.DisplayRole, item)
                 self.b_table_view.setItem(row, _n, tableitem)
