@@ -26,10 +26,15 @@ class SISThread(QThread):
     def __init__(self, parent=None):
         super(SISThread, self).__init__(parent)
         self.finished.connect(self.deleteLater)
+        self.running = True
+
+    def setRunning(self, how):
+        self.running = how
 
 
 class TheDownloader(SISThread):
     send_text = pyqtSignal(str)
+    bad_proxies_record = {}
 
     def __init__(self, proxies_pool, cookies, parent=None):
         super(TheDownloader, self).__init__(parent=parent)
@@ -44,29 +49,36 @@ class TheDownloader(SISThread):
                       'Mozilla/5.0 (X11; U; FreeBSD i386; ru-RU; rv:1.9.1.3) Gecko/20090913 Firefox/3.5.3',
                       'Mozilla/5.0 (X11; U; Linux i686; fr; rv:1.9.0.1) Gecko/2008070206 Firefox/2.0.0.8',
                       'Mozilla/4.0 (compatible; MSIE 5.0; Linux 2.4.20-686 i686) Opera 6.02  [en]']
-        return random.choice(UserAgents)
+        return {'User-Agent': random.choice(UserAgents)}
+
+    def get_proxy(self):
+        return {'http': random.choice(self.proxies_pool)}
 
     def make_soup(self, url):
         while True:
+            proxy = self.get_proxy()
             try:
-                proxy = random.choice(self.proxies_pool)
-            except IndexError:
-                print('Lacking proxies, waiting...')
-                time.sleep(5)
-                continue
-            try:
-                response = requests.get(url, headers={'User-Agent': self.get_headers()}, cookies=self.cookies,
-                                        proxies={'http': proxy}, timeout=10)
+                response = requests.get(url, headers=self.get_headers(), cookies=self.cookies,
+                                        proxies=proxy, timeout=10)
                 return BeautifulSoup(response.content.decode('gbk', 'ignore'), 'lxml')
             except requests.exceptions.RequestException:
+                # when a connection problem occurred, this procedure will record which proxy made this problem
+                # and how many times of connection problem this proxy made.
+                # if the error times greater than 10, this proxy will be moved from proxies pool.
                 self.emitInfo('Time out on <a href="{}">{}</a> with proxy, try again.'.format(url, url.split('/')[-1]))
-                # try:
-                #     self.locker.lockForWrite()
-                #     self.proxies_pool.pop(self.proxies_pool.index(proxy))
-                # except (ValueError, IndexError):
-                #     continue
-                # finally:
-                #     self.locker.unlock()
+                if proxy['http'] in self.bad_proxies_record.keys():
+                    self.bad_proxies_record[proxy['http']] += 1
+                else:
+                    self.bad_proxies_record[proxy['http']] = 1
+                if self.bad_proxies_record[proxy['http']] > 10 and proxy['http'] is not None:
+                    try:
+                        self.locker.lockForWrite()
+                        self.proxies_pool.pop(self.proxies_pool.index(proxy['http']))
+                        print('{} popped.'.format(proxy['http']))
+                    except ValueError:
+                        print('{} has already popped.'.format(proxy['http']))
+                    finally:
+                        self.locker.unlock()
 
     def emitInfo(self, text):
         self.send_text.emit('[{t}] {info}'.format(t=datetime.datetime.now().strftime('%H:%M:%S'), info=text))
@@ -84,7 +96,7 @@ class SISTopic(TheDownloader):
         connectDB = sqlite3.connect('SISDB.sqlite')
         allUrlDownloaded = [x[0] for x in connectDB.cursor().execute('SELECT tid FROM SIS').fetchall()]
         connectDB.close()
-        while True:
+        while self.running:
             try:
                 __tps = self.extract_info_from_page(next(self.pages_generator))
                 try:
@@ -128,7 +140,8 @@ class SISTopic(TheDownloader):
             size = _s_t[0].strip()
             mov_type = _s_t[1].strip()
             mosaic = self.ismosaic(page)
-            ret.append((url, topic_type, name, mosaic, thumb_up, create_date, size, mov_type))
+            cate = self.getCategory(page)
+            ret.append((url, topic_type, name, mosaic, thumb_up, create_date, size, mov_type, cate))
         return ret
 
     def ismosaic(self, url):
@@ -139,32 +152,35 @@ class SISTopic(TheDownloader):
         else:
             return 2
 
+    def getCategory(self, url):
+        if 'forum-143-' in url or 'forum-230-' in url or 'forum-25-' in url or 'forum-58-' in url:
+            return 'asia'
+        elif 'forum-229-' in url or 'forum-77-' in url:
+            return 'western'
+        else:
+            return 'cartoon'
+
 
 class SISTors(TheDownloader):
-    thread_progress_signal = pyqtSignal(str)
-
-    def __init__(self, topics_pool, sqlqueries_pool, proxies_pool, cookies=None, parent=None):
+    def __init__(self, topics_pool, sqlqueries_pool, proxies_pool, topics_working_threads, cookies=None, parent=None):
         super(SISTors, self).__init__(proxies_pool, cookies, parent)
         self.topics_pool = topics_pool
         self.thisqueries_pool = sqlqueries_pool
         self.headers = self.get_headers()
-        try:
-            os.mkdir(self.save_dir)
-        except:
-            pass
+        self.topics_working_threads = topics_working_threads
 
     def run(self):
-        while True:
+        while self.running:
             try:
                 self.locker.lockForWrite()
                 job = self.topics_pool.pop()
             except IndexError:
-                self.thread_progress_signal.emit('topic thread done')
+                self.topics_working_threads[0] -= 1
                 return
             finally:
                 self.locker.unlock()
             self.download_content_from_topic(job)
-            self.thread_progress_signal.emit('one topic finished')
+        self.topics_working_threads[0] -= 1
 
     def download_content_from_topic(self, topics):
         tar_page = self.baseurl + topics[0]
@@ -183,6 +199,7 @@ class SISTors(TheDownloader):
         except (AttributeError, ValueError):
             t_size = 0
         t_mtype = topics[7]
+        t_catey = topics[8]
         self.emitInfo('Downloading {}'.format(t_name))
         pagesoup = self.make_soup(tar_page)
         # get movie information
@@ -192,9 +209,9 @@ class SISTors(TheDownloader):
             self.emitInfo('{} failed.'.format(tar_page))
             return
 
-        self.insertToQueriesPool(t_id, t_name, t_type, t_mosaic, t_thumbup, t_date, t_size, t_mtype, page_info)
+        self.insertToQueriesPool(t_id, t_name, t_type, t_mosaic, t_thumbup, t_date, t_size, t_mtype, t_catey, page_info)
 
-    def insertToQueriesPool(self, tid, tname, ttype, tmosaic, tthumbup, tdate, tsize, tmtype, page_info):
+    def insertToQueriesPool(self, tid, tname, ttype, tmosaic, tthumbup, tdate, tsize, tmtype, tcatey, page_info):
         try:
             page_tors = page_info.find_all('a', {'href': re.compile(r'attachment')})
         except AttributeError:
@@ -202,22 +219,27 @@ class SISTors(TheDownloader):
         if page_tors is None:
             return
         # download torrents
-        tor_errs = 0
         for each_attach in page_tors:
-            try:
-                # print('Download {}'.format(each_attach.text))
-                torbyte = requests.get(self.baseurl + each_attach['href']).content
-                magaddr = tor2mag.decodeTor(torbyte)
-                self.locker.lockForWrite()
-                self.thisqueries_pool['tor'].append((tid, magaddr))
-            except (requests.exceptions.RequestException, flatbencode.DecodingError) as err:
-                print('{} {}'.format(each_attach, err))
-                tor_errs += 1
-                continue
-            finally:
-                self.locker.unlock()
-        if tor_errs == len(page_tors):
-            return
+            tor = self.baseurl + each_attach['href']
+            tries = 5
+            while tries:
+                try:
+                    # print('Download {}'.format(each_attach.text))
+                    torbyte = requests.get(tor, headers=self.get_headers()).content
+                    magaddr = tor2mag.decodeTor(torbyte)
+                    try:
+                        self.locker.lockForWrite()
+                        self.thisqueries_pool['tor'].append((tid, magaddr))
+                    finally:
+                        self.locker.unlock()
+                    break
+                except requests.exceptions.RequestException:
+                    print('Torrent "{}" download failed, try again.'.format(tor))
+                    tries -= 1
+                    continue
+                except flatbencode.DecodingError:
+                    print('Torrent "{}" decode failed, abort.'.format(tor))
+                    break
         try:
             tbrief = page_info.find('div', {'class': 't_msgfont'}).text
         except AttributeError:
@@ -229,7 +251,8 @@ class SISTors(TheDownloader):
                 tmosaic = 1
         try:
             self.locker.lockForWrite()
-            self.thisqueries_pool['main'].append((tid, ttype, tname, tmosaic, tthumbup, tdate, tsize, tmtype, tbrief))
+            self.thisqueries_pool['main']\
+                .append((tid, ttype, tname, tmosaic, tthumbup, tdate, tsize, tmtype, tbrief, tcatey))
         finally:
             self.locker.unlock()
 
@@ -280,9 +303,9 @@ class SISSql(SISThread):
                     try:
                         self.locker.lockForWrite()
                         maininfo = self.queries['main'].pop()
-                        query('INSERT INTO SIS VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)',
+                        query('INSERT INTO SIS VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
                               (maininfo[0], maininfo[1], maininfo[2], maininfo[3],
-                               maininfo[4], maininfo[5], maininfo[6], maininfo[7], maininfo[8]))
+                               maininfo[4], maininfo[5], maininfo[6], maininfo[7], maininfo[8], maininfo[9]))
                     except sqlite3.IntegrityError as err:
                         print(err)
                     finally:
@@ -311,28 +334,28 @@ class SISSql(SISThread):
 
 class SISPicLoader(SISThread):
     picpak_broadcast = pyqtSignal(tuple)
-    thread_progress_signal = pyqtSignal(str)
 
-    def __init__(self, pics_pool_for_downloading, parent=None):
+    def __init__(self, pics_pool_for_downloading, pictures_working_threads, parent=None):
         super(SISPicLoader, self).__init__(parent)
         self.pics_pool_for_downloading = pics_pool_for_downloading
+        self.pictures_working_threads = pictures_working_threads
 
     def run(self):
-        while True:
+        while self.running:
             try:
                 self.locker.lockForWrite()
                 getjob = self.pics_pool_for_downloading.pop()
             except IndexError:
-                self.thread_progress_signal.emit('pic thread done')
+                self.pictures_working_threads[0] -= 1
                 return
             finally:
                 self.locker.unlock()
             try:
                 bpic = requests.get(getjob[1]).content
-                self.picpak_broadcast.emit((bpic, getjob[1]))
+                if b'html' not in bpic:
+                    self.picpak_broadcast.emit((bpic, getjob[1]))
+                else:
+                    self.picpak_broadcast.emit((None, getjob[1]))
             except requests.exceptions.RequestException:
                 self.picpak_broadcast.emit((None, getjob[1]))
-            finally:
-                self.thread_progress_signal.emit('one picture finished')
-
-
+        self.pictures_working_threads[0] -= 1
