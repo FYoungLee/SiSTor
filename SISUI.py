@@ -1,4 +1,4 @@
-import SIS
+import SIS, Proxies
 import os, requests, sqlite3
 from PyQt5.QtWidgets import QWidget, QPushButton, QHBoxLayout, QVBoxLayout, QLabel, QComboBox, QLineEdit, \
      QMessageBox, QTextBrowser, QTabWidget, QTableWidget, QTableWidgetItem, QHeaderView, QDialog
@@ -6,9 +6,11 @@ from PyQt5.QtCore import Qt
 from PyQt5.Qt import QPixmap
 
 Page_Threads = 2
-Topic_Threads = 20
-Picture_Threads = 100
-
+Topic_Threads = 12
+Picture_Threads = 300
+# Page_Threads = 1
+# Topic_Threads = 1
+# Picture_Threads = 1
 
 class SISMainWindow(QWidget):
     def __init__(self, parent=None):
@@ -58,7 +60,7 @@ class SISMainWindow(QWidget):
                 """
                 create table SIStor(
                 tid text not null,
-                magnet text not null primary key)""")
+                magnet text not null)""")
             connect.cursor().execute(
                 """
                 create table SISpic(
@@ -84,17 +86,19 @@ class DownloaderWidget(QWidget):
         self.topics_pool = []
         self.pics_pool_for_downloading = []
         self.pics_pool_for_downloading.extend(self.getUndownloadedPic())
+        self.proxies_pool = [None]
+        self.sqlqueries_pool = {'main': [], 'tor': [], 'pic': []}
         self.cookies = None
         self.initUI()
-        self.sqlqueries_pool = {'main': [], 'tor': [], 'pic': []}
+        self.proxiesoperator = Proxies.ProxiesThread(self.proxies_pool, self)
+        self.proxiesoperator.start()
         self.sqloperator = SIS.SISSql(self.sqlqueries_pool, self.pics_pool_for_downloading, self)
         self.sqloperator.start()
-        self.pics_generator = None
-        self.topics_generator = None
         self.topics_working_threads = 0
         self.pictures_working_threads = 0
         self.pictures_finished = 0
         self.topics_finished = 0
+        self.startTimer(1000)
 
     def initUI(self):
         #################################################
@@ -112,7 +116,7 @@ class DownloaderWidget(QWidget):
         self.url_line.setText(self.get_forum_address())
         self.url_label = QLabel()
         self.url_label.setFixedWidth(30)
-        self.check_url()
+        # self.check_url()
         self.url_test_btn = QPushButton('Test(测试)')
         self.url_test_btn.clicked.connect(self.check_url)
         self.url_box.addWidget(self.url_label_title)
@@ -210,7 +214,12 @@ class DownloaderWidget(QWidget):
             return f.readline()
 
     def check_url(self):
-        if requests.head(self.url_line.text()).ok:
+        try:
+            req = requests.head(self.url_line.text(), timeout=2)
+        except requests.exceptions.RequestException:
+            self.url_label.setText('Failed')
+            return
+        if req.ok:
             self.url_label.setText('OK')
             with open('sis_addr.dat', 'w') as f:
                 f.write(self.url_line.text())
@@ -246,7 +255,7 @@ class DownloaderWidget(QWidget):
         return ret
 
     def start_btn_clicked(self):
-        if 'Failed' in self.url_label.text():
+        if 'OK' not in self.url_label.text():
             QMessageBox().critical(self, 'URL error', 'In case the url is not correct, download failed\n'
                                                       '站点不可用，不能下载。')
             return
@@ -259,42 +268,36 @@ class DownloaderWidget(QWidget):
         pages_generator = (self.url_line.text() + self.sub_forum_addr() + '{}.html'.format(each)
                      for each in range(1, int(self.pages_line.text()) + 1))
         for each in range(Page_Threads):
-            td = SIS.SISTopic(pages_generator, self.topics_pool, self.cookies, self)
+            td = SIS.SISTopic(pages_generator, self.topics_pool, self.proxies_pool, self.cookies, self)
             td.send_text.connect(self.infoRec)
             td.start()
         # create a generator from above list, provide to torrents_downloader threads co-work.
-        self.topics_generator = (x for x in self.topics_pool)
-        self.pics_generator = (x for x in self.pics_pool_for_downloading)
-        self.startTimer(1000)
 
     def timerEvent(self, QTimerEvent):
-        self.progress_label.setText('Topics Remain: {} \t Pics Remain: {} \t Topic Threads: {} \t Picture Threads: {}'
-                                    .format(len(self.topics_pool) - self.topics_finished,
-                                            len(self.pics_pool_for_downloading) - self.pictures_finished,
-                                            self.topics_working_threads, self.pictures_working_threads))
-        if len(self.pics_pool_for_downloading) - self.pictures_finished > 10 \
+        self.progress_label.setText('Topics Remain: {} \t Pics Remain: {} \t\t Topic Threads: {} \t Picture Threads: {}'
+                                    ' \t Proxies: {}'.format(len(self.topics_pool), len(self.pics_pool_for_downloading),
+                                                             self.topics_working_threads, self.pictures_working_threads,
+                                                             len(self.proxies_pool)))
+        if len(self.pics_pool_for_downloading) >= self.pictures_working_threads \
                 and self.pictures_working_threads < Picture_Threads:
-            th = SIS.SISPicLoader(self.pics_generator, self)
+            th = SIS.SISPicLoader(self.pics_pool_for_downloading, self)
             th.picpak_broadcast.connect(self.sqloperator.picUpdate)
             th.thread_progress_signal.connect(self.threadClosedSlot)
             th.start()
             self.pictures_working_threads += 1
-            print('New Picture Thread {} Created'.format(self.pictures_working_threads))
-        if len(self.topics_pool) - self.topics_finished > 10 \
-                and self.topics_working_threads < Topic_Threads:
-            th = SIS.SISTors(self.topics_generator, self.sqlqueries_pool, self.cookies, self)
+        if len(self.topics_pool) >= self.topics_working_threads and self.topics_working_threads < Topic_Threads:
+            th = SIS.SISTors(self.topics_pool, self.sqlqueries_pool, self.proxies_pool, self.cookies, self)
             th.send_text.connect(self.infoRec)
             th.thread_progress_signal.connect(self.threadClosedSlot)
             th.start()
             self.topics_working_threads += 1
-            print('New Torrent Thread {} Created'.format(self.topics_working_threads))
 
     def threadClosedSlot(self, what):
         if 'pic thread done' in what:
             self.pictures_working_threads -= 1
         elif 'topic thread done' in what:
             self.topics_working_threads -= 1
-        elif 'one thread finished' in what:
+        elif 'one topic finished' in what:
             self.topics_finished += 1
         elif 'one picture finished' in what:
             self.pictures_finished += 1

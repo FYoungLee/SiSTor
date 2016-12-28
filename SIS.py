@@ -13,6 +13,7 @@ import random
 import time
 import sqlite3
 import flatbencode
+import json
 from PyQt5.QtCore import QThread
 from PyQt5.QtCore import pyqtSignal
 from PyQt5.QtCore import QReadWriteLock
@@ -30,10 +31,11 @@ class SISThread(QThread):
 class TheDownloader(SISThread):
     send_text = pyqtSignal(str)
 
-    def __init__(self, cookies, parent=None):
+    def __init__(self, proxies_pool, cookies, parent=None):
         super(TheDownloader, self).__init__(parent=parent)
         with open('sis_addr.dat', 'r') as f:
             self.baseurl = f.readline()
+        self.proxies_pool = proxies_pool
         self.cookies = cookies
 
     def get_headers(self):
@@ -45,17 +47,26 @@ class TheDownloader(SISThread):
         return random.choice(UserAgents)
 
     def make_soup(self, url):
-        try_times = 5
-        while try_times:
+        while True:
+            try:
+                proxy = random.choice(self.proxies_pool)
+            except IndexError:
+                print('Lacking proxies, waiting...')
+                time.sleep(5)
+                continue
             try:
                 response = requests.get(url, headers={'User-Agent': self.get_headers()}, cookies=self.cookies,
-                                        timeout=10)
+                                        proxies={'http': proxy}, timeout=10)
                 return BeautifulSoup(response.content.decode('gbk', 'ignore'), 'lxml')
-            except:
-                self.emitInfo('Time out on <a href="{}">{}</a>, try again.'.format(url, url.split('/')[-1]))
-                time.sleep(3)
-                try_times -= 1
-        return None
+            except requests.exceptions.RequestException:
+                self.emitInfo('Time out on <a href="{}">{}</a> with proxy, try again.'.format(url, url.split('/')[-1]))
+                # try:
+                #     self.locker.lockForWrite()
+                #     self.proxies_pool.pop(self.proxies_pool.index(proxy))
+                # except (ValueError, IndexError):
+                #     continue
+                # finally:
+                #     self.locker.unlock()
 
     def emitInfo(self, text):
         self.send_text.emit('[{t}] {info}'.format(t=datetime.datetime.now().strftime('%H:%M:%S'), info=text))
@@ -64,8 +75,8 @@ class TheDownloader(SISThread):
 class SISTopic(TheDownloader):
     """ this object intend to download all topics in the given forum """
 
-    def __init__(self, pages_generator, topics_pool, cookies=None, parent=None):
-        super(SISTopic, self).__init__(cookies, parent)
+    def __init__(self, pages_generator, topics_pool, proxies_pool, cookies=None, parent=None):
+        super(SISTopic, self).__init__(proxies_pool, cookies, parent)
         self.pages_generator = pages_generator
         self.thispool = topics_pool
 
@@ -76,10 +87,15 @@ class SISTopic(TheDownloader):
         while True:
             try:
                 __tps = self.extract_info_from_page(next(self.pages_generator))
-                newtpc = list(filter(lambda x: x[0].split('.')[0] not in allUrlDownloaded, __tps))
+                try:
+                    __tps = list(filter(lambda x: x[0].split('.')[0] not in allUrlDownloaded, __tps))
+                except TypeError:
+                    pass
                 try:
                     self.locker.lockForWrite()
-                    self.thispool.extend(newtpc)
+                    self.thispool.extend(__tps)
+                except TypeError:
+                    pass
                 finally:
                     self.locker.unlock()
             except StopIteration:
@@ -127,9 +143,9 @@ class SISTopic(TheDownloader):
 class SISTors(TheDownloader):
     thread_progress_signal = pyqtSignal(str)
 
-    def __init__(self, topics_generator, sqlqueries_pool, cookies=None, parent=None):
-        super(SISTors, self).__init__(cookies, parent)
-        self.topics_generator = topics_generator
+    def __init__(self, topics_pool, sqlqueries_pool, proxies_pool, cookies=None, parent=None):
+        super(SISTors, self).__init__(proxies_pool, cookies, parent)
+        self.topics_pool = topics_pool
         self.thisqueries_pool = sqlqueries_pool
         self.headers = self.get_headers()
         try:
@@ -140,11 +156,15 @@ class SISTors(TheDownloader):
     def run(self):
         while True:
             try:
-                self.download_content_from_topic(next(self.topics_generator))
-                self.thread_progress_signal.emit('one thread finished')
-            except StopIteration:
+                self.locker.lockForWrite()
+                job = self.topics_pool.pop()
+            except IndexError:
                 self.thread_progress_signal.emit('topic thread done')
                 return
+            finally:
+                self.locker.unlock()
+            self.download_content_from_topic(job)
+            self.thread_progress_signal.emit('one topic finished')
 
     def download_content_from_topic(self, topics):
         tar_page = self.baseurl + topics[0]
@@ -155,10 +175,13 @@ class SISTors(TheDownloader):
         t_thumbup = topics[4]
         t_date = topics[5]
         t_size = topics[6]
-        if 'M' in t_size:
-            t_size = int(t_size.replace('M', '').replace('B', ''))
-        elif 'G' in t_size:
-            t_size = int(float(t_size.replace('G', '').replace('B', '')) * 1000)
+        try:
+            if 'G' in t_size:
+                t_size = float(re.match(r'(\d+\.?\d+)', t_size).group(1)) * 1000
+            else:
+                t_size = float(re.match(r'(\d+\.?\d+)', t_size).group(1))
+        except (AttributeError, ValueError):
+            t_size = 0
         t_mtype = topics[7]
         self.emitInfo('Downloading {}'.format(t_name))
         pagesoup = self.make_soup(tar_page)
@@ -170,7 +193,6 @@ class SISTors(TheDownloader):
             return
 
         self.insertToQueriesPool(t_id, t_name, t_type, t_mosaic, t_thumbup, t_date, t_size, t_mtype, page_info)
-
 
     def insertToQueriesPool(self, tid, tname, ttype, tmosaic, tthumbup, tdate, tsize, tmtype, page_info):
         try:
@@ -271,10 +293,10 @@ class SISSql(SISThread):
                         pic = self.pics_pool_for_updating_db.pop()
                         if pic[0]:
                             query('UPDATE SISpic SET picb=? WHERE picaddr=?', (pic[0], pic[1]))
-                            print('Updated new picture {}'.format(pic[1]))
+                            # print('Updated new picture {}'.format(pic[1]))
                         else:
                             query('DELETE FROM SISpic WHERE picaddr=?', (pic[1],))
-                            print('Bad picture deleted {}'.format(pic[1]))
+                            # print('Bad picture deleted {}'.format(pic[1]))
                     except sqlite3.IntegrityError as err:
                         print(err)
                     finally:
@@ -291,20 +313,22 @@ class SISPicLoader(SISThread):
     picpak_broadcast = pyqtSignal(tuple)
     thread_progress_signal = pyqtSignal(str)
 
-    def __init__(self, pics_generator, parent=None):
+    def __init__(self, pics_pool_for_downloading, parent=None):
         super(SISPicLoader, self).__init__(parent)
-        self.pics_generator = pics_generator
+        self.pics_pool_for_downloading = pics_pool_for_downloading
 
     def run(self):
         while True:
             try:
-                getjob = next(self.pics_generator)
-            except StopIteration:
-                print('Picture thread waitting for job.')
-                time.sleep(3)
-                continue
+                self.locker.lockForWrite()
+                getjob = self.pics_pool_for_downloading.pop()
+            except IndexError:
+                self.thread_progress_signal.emit('pic thread done')
+                return
+            finally:
+                self.locker.unlock()
             try:
-                bpic = requests.get(getjob[1], timeout=60).content
+                bpic = requests.get(getjob[1]).content
                 self.picpak_broadcast.emit((bpic, getjob[1]))
             except requests.exceptions.RequestException:
                 self.picpak_broadcast.emit((None, getjob[1]))
