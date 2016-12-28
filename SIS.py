@@ -79,6 +79,7 @@ class TheDownloader(SISThread):
                         print('{} has already popped.'.format(proxy['http']))
                     finally:
                         self.locker.unlock()
+                time.sleep(3)
 
     def emitInfo(self, text):
         self.send_text.emit('[{t}] {info}'.format(t=datetime.datetime.now().strftime('%H:%M:%S'), info=text))
@@ -135,7 +136,10 @@ class SISTopic(TheDownloader):
             name = e.span.a.text
             url = e.find('a')['href']
             create_date = e.find('td', {'class': 'author'}).em.text.strip()
-            thumb_up = int(e.find('cite').contents[-1].strip())
+            try:
+                thumb_up = int(e.find('cite').contents[-1].strip())
+            except KeyError:
+                thumb_up = 0
             _s_t = e.findAll('td', {'class': 'nums'})[-1].text.split('/')
             size = _s_t[0].strip()
             mov_type = _s_t[1].strip()
@@ -175,6 +179,7 @@ class SISTors(TheDownloader):
                 self.locker.lockForWrite()
                 job = self.topics_pool.pop()
             except IndexError:
+                print('Out of topics work, bye.')
                 self.topics_working_threads[0] -= 1
                 return
             finally:
@@ -225,7 +230,7 @@ class SISTors(TheDownloader):
             while tries:
                 try:
                     # print('Download {}'.format(each_attach.text))
-                    torbyte = requests.get(tor, headers=self.get_headers()).content
+                    torbyte = requests.get(tor, headers=self.get_headers(), timeout=10).content
                     magaddr = tor2mag.decodeTor(torbyte)
                     try:
                         self.locker.lockForWrite()
@@ -236,6 +241,7 @@ class SISTors(TheDownloader):
                 except requests.exceptions.RequestException:
                     print('Torrent "{}" download failed, try again.'.format(tor))
                     tries -= 1
+                    time.sleep(2)
                     continue
                 except flatbencode.DecodingError:
                     print('Torrent "{}" decode failed, abort.'.format(tor))
@@ -346,13 +352,16 @@ class SISPicLoader(SISThread):
                 self.locker.lockForWrite()
                 getjob = self.pics_pool_for_downloading.pop()
             except IndexError:
+                # print('Out of pictures work, bye.')
                 self.pictures_working_threads[0] -= 1
                 return
             finally:
                 self.locker.unlock()
             try:
-                bpic = requests.get(getjob[1]).content
-                if b'html' not in bpic:
+                if requests.head(getjob[1], timeout=5).ok is False:
+                    continue
+                bpic = requests.get(getjob[1], timeout=120).content
+                if b'html' not in bpic and None is not bpic:
                     self.picpak_broadcast.emit((bpic, getjob[1]))
                 else:
                     self.picpak_broadcast.emit((None, getjob[1]))
