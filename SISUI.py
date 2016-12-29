@@ -1,12 +1,12 @@
 import SIS, Proxies
-import os, requests, sqlite3
+import os, requests, sqlite3, json
 from PyQt5.QtWidgets import QWidget, QPushButton, QHBoxLayout, QVBoxLayout, QLabel, QComboBox, QLineEdit, \
      QMessageBox, QTextBrowser, QTabWidget, QTableWidget, QTableWidgetItem, QHeaderView, QMainWindow
 from PyQt5.QtCore import Qt, QSize, pyqtSignal
 from PyQt5.Qt import QPixmap
 
-Page_Threads = 1
-Topic_Threads = 20
+Page_Threads = 30
+Topic_Threads = 30
 Picture_Threads = 300
 # Page_Threads = 1
 # Topic_Threads = 1
@@ -94,14 +94,21 @@ class DownloaderWidget(QWidget):
         self.sqlqueries_pool = {'main': [], 'tor': [], 'pic': []}
         self.cookies = None
         self.initUI()
-        self.proxiesoperator = Proxies.ProxiesThread(self.proxies_pool, self)
-        self.proxiesoperator.start()
+        # set proxies updater threads.
+        for which in range(1, 3):
+            proxiesoperator = Proxies.ProxiesThread(self.proxies_pool, which, self)
+            proxiesoperator.start()
+        # set sql operator
         self.sqloperator = SIS.SISSql(self.sqlqueries_pool, self.pics_pool_for_downloading, self)
         self.sqloperator.start()
         self.pages_generator = None
         self.topics_working_threads = [0]
         self.pictures_working_threads = [0]
         self.startTimer(1000)
+
+    def __del__(self):
+        with open('UnfinishedPictures.json', 'w') as f:
+            f.write(json.dumps(self.pics_pool_for_downloading))
 
     def initUI(self):
         #################################################
@@ -275,17 +282,22 @@ class DownloaderWidget(QWidget):
                 return
             self.start_btn.setText('Downloading...')
             if len(self.pics_pool_for_downloading) == 0:
-                self.pics_pool_for_downloading.extend(self.getUndownloadedPic())
+                with open('UnfinishedPictures.json') as f:
+                    content = f.read()
+                    if content:
+                        self.pics_pool_for_downloading.extend(json.loads(content))
+                # self.pics_pool_for_downloading.extend(self.getUndownloadedPic())
             # 生成一个generator, 提供给线程协同下载topics
-
             if self.pages_generator is None:
                 self.pages_generator = (self.url_line.text() + self.sub_forum_addr() + '{}.html'.format(each)
                              for each in range(1, int(self.pages_line.text()) + 1))
             for each in range(Page_Threads):
-                td = SIS.SISTopic(self.pages_generator, self.topics_pool, self.proxies_pool, self.cookies, self)
+                td = SIS.SISTopic(self.pages_generator, self.topics_pool, self.proxies_pool, self.topics_working_threads,
+                                  self.cookies, self)
                 td.send_text.connect(self.infoRec)
                 self.stop_thread_signal.connect(td.setRunning)
                 td.start()
+                self.topics_working_threads[0] += 1
 
     def stop_btn_clicked(self):
         self.start_btn.setText('Start')
@@ -306,7 +318,8 @@ class DownloaderWidget(QWidget):
             th.start()
             self.pictures_working_threads[0] += 1
         if len(self.topics_pool) > self.topics_working_threads[0] and self.topics_working_threads[0] < Topic_Threads:
-            th = SIS.SISTors(self.topics_pool, self.sqlqueries_pool, self.proxies_pool, self.topics_working_threads, self.cookies, self)
+            th = SIS.SISTors(self.topics_pool, self.sqlqueries_pool, self.proxies_pool, self.topics_working_threads,
+                             self.cookies, self)
             th.send_text.connect(self.infoRec)
             self.stop_thread_signal.connect(th.setRunning)
             th.start()

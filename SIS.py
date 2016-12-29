@@ -55,12 +55,14 @@ class TheDownloader(SISThread):
         return {'http': random.choice(self.proxies_pool)}
 
     def make_soup(self, url):
+        response = self.request_with_proxy(url)
+        return BeautifulSoup(response.content.decode('gbk', 'ignore'), 'lxml')
+
+    def request_with_proxy(self, url):
         while True:
             proxy = self.get_proxy()
             try:
-                response = requests.get(url, headers=self.get_headers(), cookies=self.cookies,
-                                        proxies=proxy, timeout=10)
-                return BeautifulSoup(response.content.decode('gbk', 'ignore'), 'lxml')
+                return requests.get(url, headers=self.get_headers(), cookies=self.cookies, proxies=proxy, timeout=10)
             except requests.exceptions.RequestException:
                 # when a connection problem occurred, this procedure will record which proxy made this problem
                 # and how many times of connection problem this proxy made.
@@ -88,10 +90,11 @@ class TheDownloader(SISThread):
 class SISTopic(TheDownloader):
     """ this object intend to download all topics in the given forum """
 
-    def __init__(self, pages_generator, topics_pool, proxies_pool, cookies=None, parent=None):
+    def __init__(self, pages_generator, topics_pool, proxies_pool, topics_working_threads, cookies=None, parent=None):
         super(SISTopic, self).__init__(proxies_pool, cookies, parent)
         self.pages_generator = pages_generator
         self.thispool = topics_pool
+        self.topics_working_threads = topics_working_threads
 
     def run(self):
         connectDB = sqlite3.connect('SISDB.sqlite')
@@ -112,6 +115,7 @@ class SISTopic(TheDownloader):
                 finally:
                     self.locker.unlock()
             except StopIteration:
+                self.topics_working_threads[0] -= 1
                 return
 
     def extract_info_from_page(self, page):
