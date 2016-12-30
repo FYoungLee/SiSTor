@@ -6,4 +6,5 @@ if __name__ == '__main__':
     app = QApplication(sys.argv)
     sis = SISUI.SISMainWindow()
     sis.show()
-    sys.exit(app.exec_())
+    app.exec_()
+    del sis

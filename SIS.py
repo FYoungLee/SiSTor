@@ -6,14 +6,15 @@
 """
 from bs4 import BeautifulSoup
 import re
-import os
 import datetime
 import requests
 import random
 import time
 import sqlite3
 import flatbencode
-import json
+import sys
+import hashlib
+import struct
 from PyQt5.QtCore import QThread
 from PyQt5.QtCore import pyqtSignal
 from PyQt5.QtCore import QReadWriteLock
@@ -87,18 +88,21 @@ class TheDownloader(SISThread):
         self.send_text.emit('[{t}] {info}'.format(t=datetime.datetime.now().strftime('%H:%M:%S'), info=text))
 
 
-class SISTopic(TheDownloader):
+class SISPageLoader(TheDownloader):
     """ this object intend to download all topics in the given forum """
 
-    def __init__(self, pages_generator, topics_pool, proxies_pool, topics_working_threads, cookies=None, parent=None):
-        super(SISTopic, self).__init__(proxies_pool, cookies, parent)
+    def __init__(self, pages_generator, task_queues, topics_working_threads, proxies_pool, cookies=None, parent=None):
+        super(SISPageLoader, self).__init__(proxies_pool, cookies, parent)
         self.pages_generator = pages_generator
-        self.thispool = topics_pool
+        self.task_queues = task_queues
         self.topics_working_threads = topics_working_threads
 
     def run(self):
         connectDB = sqlite3.connect('SISDB.sqlite')
-        allUrlDownloaded = [x[0] for x in connectDB.cursor().execute('SELECT tid FROM SIS').fetchall()]
+        # extract all downloaded topics from databases.
+        allUrlDownloaded = ['thread-' + x[0] for x in connectDB.cursor().execute('SELECT tid FROM SIStops').fetchall()]
+        # plus those topics in local queue.
+        allUrlDownloaded.extend([x.split('.')[0] for x in self.task_queues['topics']])
         connectDB.close()
         while self.running:
             try:
@@ -109,7 +113,7 @@ class SISTopic(TheDownloader):
                     pass
                 try:
                     self.locker.lockForWrite()
-                    self.thispool.extend(__tps)
+                    self.task_queues['topics'].extend(__tps)
                 except TypeError:
                     pass
                 finally:
@@ -125,71 +129,98 @@ class SISTopic(TheDownloader):
         try:
             raw_info = self.make_soup(page)
             raw_info = raw_info.findAll('tbody')
-        except:
+        except AttributeError :
             self.emitInfo('Bad page: <a href="{}">{}</a>'.format(page, page.split('/')[-1]))
             return
         for e in raw_info:
             try:
-                # requrie the movie type
-                topic_type = e.find('th').find('em').find('a').text
-            except AttributeError:
+                if '版务' in e.find('th').find('em').find('a').text:
+                    continue
+            except AttributeError as err:
+                print('{} : Line {}'.format(err, sys.exc_info()[2].tb_frame.f_lineno))
                 continue
-            # filter the non-moive topic
-            if topic_type == '版务':
-                continue
-            name = e.span.a.text
             url = e.find('a')['href']
-            create_date = e.find('td', {'class': 'author'}).em.text.strip()
-            try:
-                thumb_up = int(e.find('cite').contents[-1].strip())
-            except KeyError:
-                thumb_up = 0
-            _s_t = e.findAll('td', {'class': 'nums'})[-1].text.split('/')
-            size = _s_t[0].strip()
-            mov_type = _s_t[1].strip()
-            mosaic = self.ismosaic(page)
-            cate = self.getCategory(page)
-            ret.append((url, topic_type, name, mosaic, thumb_up, create_date, size, mov_type, cate))
+            ret.append(url)
         return ret
 
-    def ismosaic(self, url):
-        if 'forum-143-' in url or 'forum-229-' in url or 'forum-25-' in url or 'forum-77-' in url:
-            return 0
-        elif 'forum-230-' in url or 'forum-58-' in url:
-            return 1
-        else:
-            return 2
 
-    def getCategory(self, url):
-        if 'forum-143-' in url or 'forum-230-' in url or 'forum-25-' in url or 'forum-58-' in url:
-            return 'asia'
-        elif 'forum-229-' in url or 'forum-77-' in url:
-            return 'western'
-        else:
-            return 'cartoon'
-
-
-class SISTors(TheDownloader):
-    def __init__(self, topics_pool, sqlqueries_pool, proxies_pool, topics_working_threads, cookies=None, parent=None):
-        super(SISTors, self).__init__(proxies_pool, cookies, parent)
-        self.topics_pool = topics_pool
+class SISTopicLoader(TheDownloader):
+    def __init__(self, task_queues, sqlqueries_pool, topics_working_threads, proxies_pool, cookies=None, parent=None):
+        super(SISTopicLoader, self).__init__(proxies_pool, cookies, parent)
+        self.task_queues = task_queues
         self.thisqueries_pool = sqlqueries_pool
-        self.headers = self.get_headers()
         self.topics_working_threads = topics_working_threads
 
     def run(self):
         while self.running:
             try:
                 self.locker.lockForWrite()
-                job = self.topics_pool.pop()
+                job = self.task_queues['topics'].pop()
             except IndexError:
                 print('Out of topics work, bye.')
                 self.topics_working_threads[0] -= 1
                 return
             finally:
                 self.locker.unlock()
-            self.download_content_from_topic(job)
+            self.download_topics(job)
         self.topics_working_threads[0] -= 1
+
+    def download_topics(self, url):
+        url = self.baseurl + url
+        topicsoup = self.make_soup(url)
+        try:
+            # crawl all topics info
+            t_id = url.split('.')[0].replace('thread-', '')
+            t_type = topicsoup.find('h1').a.text[1:-1]
+            t_name = topicsoup.find('h1').a.next_sibling
+            t_censor = self.isMosic(topicsoup)
+            t_thumbup = topicsoup.find('a', {'id': 'ajax_thanks'}).text
+            t_date = re.search(r'(\d+-\d+-\d+)', topicsoup.find('div', {'class': 'postinfo'}).text).group(1)
+            if 'asia' in topicsoup.find('div', {'id': 'nav'}).text.lower():
+                t_category = 1
+            elif 'western' in topicsoup.find('div', {'id': 'nav'}).text.lower():
+                t_category = 2
+            elif 'anime' in topicsoup.find('div', {'id': 'nav'}).text.lower():
+                t_category = 3
+            else:
+                t_category = 0
+            try:
+                self.locker.lockForWrite()
+                self.thisqueries_pool['top'].append((t_id, t_type, t_name, t_censor, t_thumbup, t_date, t_category))
+            finally:
+                self.locker.unlock()
+            # push tors into queue
+            try:
+                page_tors = topicsoup.find_all('a', {'href': re.compile(r'attachment')})
+                for each in page_tors:
+                    self.task_queues['tors'].append((t_id, each['href']))
+            except AttributeError as err:
+                print('{} : Line {}'.format(err, sys.exc_info()[2].tb_frame.f_lineno))
+                return
+            # push pics into queue
+            for pic in topicsoup.find('div', {'class': 't_msgfont'}).find_all('img', {'src': re.compile(r'jpg|png')}):
+                pic_url = pic['src']
+                try:
+                    self.locker.lockForWrite()
+                    self.task_queues['pics'].append((t_id, pic_url))
+                finally:
+                    self.locker.unlock()
+        except AttributeError as err:
+            print('{} : Line {}'.format(err, sys.exc_info()[2].tb_frame.f_lineno))
+            return
+
+    def isMosic(self, obj):
+        try:
+            area1 = obj.find('div', {'id': 'foruminfo'}).text
+            area2 = obj.find('div', {'class': 't_msgfont'}).text
+        except AttributeError:
+            return 2
+        if '无码' in area1 or '无码' in area2 or '無碼' in area1 or '無碼' in area2:
+            return 0
+        elif '有码' in area1 or '有码' in area2 or '有碼' in area1 or '有碼' in area2:
+            return 1
+        else:
+            return 2
 
     def download_content_from_topic(self, topics):
         tar_page = self.baseurl + topics[0]
@@ -234,7 +265,8 @@ class SISTors(TheDownloader):
             while tries:
                 try:
                     # print('Download {}'.format(each_attach.text))
-                    torbyte = requests.get(tor, headers=self.get_headers(), timeout=10).content
+                    # torbyte = requests.get(tor, headers=self.get_headers(), timeout=10).content
+                    torbyte = self.request_with_proxy(tor).content
                     magaddr = tor2mag.decodeTor(torbyte)
                     try:
                         self.locker.lockForWrite()
@@ -245,10 +277,11 @@ class SISTors(TheDownloader):
                 except requests.exceptions.RequestException:
                     print('Torrent "{}" download failed, try again.'.format(tor))
                     tries -= 1
-                    time.sleep(2)
+                    time.sleep(1)
                     continue
                 except flatbencode.DecodingError:
-                    print('Torrent "{}" decode failed, abort.'.format(tor))
+                    self.thisqueries_pool['tor'].append((tid, tor))
+                    print('{} decode failed.'.format(tor))
                     break
         try:
             tbrief = page_info.find('div', {'class': 't_msgfont'}).text
@@ -275,14 +308,109 @@ class SISTors(TheDownloader):
                 self.locker.unlock()
 
 
+class SISTorLoader(TheDownloader):
+    def __init__(self, task_queues, sqlqueries_pool, tors_working_threads, proxies_pool, cookies=None, parent=None):
+        super(SISTorLoader, self).__init__(proxies_pool, cookies, parent)
+        self.task_queues = task_queues
+        self.thisqueries_pool = sqlqueries_pool
+        self.tors_working_threads = tors_working_threads
+
+    def run(self):
+        while self.running:
+            try:
+                self.locker.lockForWrite()
+                job = self.task_queues['tors'].pop()
+            except IndexError:
+                print('Out of topics work, bye.')
+                self.tors_working_threads[0] -= 1
+                return
+            finally:
+                self.locker.unlock()
+            self.download_tors(job)
+        self.tors_working_threads[0] -= 1
+
+    def download_tors(self, job):
+        url = self.baseurl + job[1]
+        req = self.request_with_proxy(url)
+        try:
+            magnet = self.magDecoder(req.content)
+            self.thisqueries_pool['tor'].append((job[0], magnet))
+        except flatbencode.DecodingError as err:
+            print('{} : Line {}'.format(err, sys.exc_info()[2].tb_frame.f_lineno))
+            try:
+                self.locker.lockForWrite()
+                self.task_queues['tors'].append(job)
+            finally:
+                self.locker.unlock()
+            return
+
+    def magDecoder(self, byte):
+        hashcontent = flatbencode.encode(flatbencode.decode(byte)[b'info'])
+        digest = hashlib.sha1(hashcontent).hexdigest()
+        magneturl = 'magnet:?xt=urn:btih:{}'.format(digest)
+        return magneturl
+
+
+class SISPicLoader(SISThread):
+    # picpak_broadcast = pyqtSignal(tuple)
+    def __init__(self, task_queues, sqlqueries_pool, pictures_working_threads, parent=None):
+        super(SISPicLoader, self).__init__(parent)
+        self.task_queues = task_queues
+        self.pictures_working_threads = pictures_working_threads
+        self.sqlqueries_pool = sqlqueries_pool
+
+    def run(self):
+        while self.running:
+            try:
+                self.locker.lockForWrite()
+                job = self.task_queues['pics'].pop()
+            except IndexError:
+                # print('Out of pictures work, bye.')
+                self.pictures_working_threads[0] -= 1
+                return
+            finally:
+                self.locker.unlock()
+            try:
+                if requests.head(job[1], timeout=5).ok is False:
+                    continue
+                bpic = requests.get(job[1], timeout=120).content
+                if self.isImage(bpic):
+                    self.sqlqueries_pool['pic'].append((job[0], bpic))
+                # if b'html' not in bpic and None is not bpic:
+                #     self.picpak_broadcast.emit((job[0], bpic))
+                # else:
+                    # self.picpak_broadcast.emit((None, getjob[1]))
+            except requests.exceptions.RequestException:
+                # self.picpak_broadcast.emit((None, getjob[1]))
+                pass
+        self.pictures_working_threads[0] -= 1
+
+    def bytes2hex(self, bytes):
+        hexstr = u""
+        for i in range(20):
+            t = u"%x" % bytes[i]
+            if len(t) % 2:
+                hexstr += u"0"
+            hexstr += t
+        return hexstr.upper()
+
+    def isImage(self, byte):
+        typeList = {"FFD8FF": True, "89504E47": True}
+        for hcode in typeList.keys():
+            f_hcode = self.bytes2hex(byte)
+            if hcode in f_hcode:
+                return True
+            else:
+                return False
+
+
 class SISSql(SISThread):
     """ operate the databases"""
 
-    def __init__(self, sqlque, pics_pool_for_downloading, parent=None):
+    def __init__(self, sqlque, task_queues, parent=None):
         super(SISSql, self).__init__(parent)
         self.queries = sqlque
-        self.pics_pool_for_downloading = pics_pool_for_downloading
-        self.pics_pool_for_updating_db = []
+        self.task_queues = task_queues
 
     def run(self):
         while True:
@@ -293,8 +421,8 @@ class SISSql(SISThread):
                     try:
                         self.locker.lockForWrite()
                         picinfo = self.queries['pic'].pop()
-                        query('INSERT INTO SISpic (tid, picaddr) VALUES(?, ?)', (picinfo[0], picinfo[1]))
-                        self.pics_pool_for_downloading.append(picinfo)
+                        query('INSERT INTO PicByte VALUES(?, ?)', (picinfo[0], picinfo[1]))
+                        query('INSERT INTO PicLink (tid) VALUES(?)', (picinfo[0],))
                     except sqlite3.IntegrityError as err:
                         print(err)
                     finally:
@@ -303,72 +431,42 @@ class SISSql(SISThread):
                     try:
                         self.locker.lockForWrite()
                         torinfo = self.queries['tor'].pop()
-                        query('INSERT INTO SIStor VALUES(?, ?)', (torinfo[0], torinfo[1]))
+                        query('INSERT INTO SISmags VALUES(?, ?)', (torinfo[0], torinfo[1]))
                     except sqlite3.IntegrityError as err:
                         print(err)
                     finally:
                         self.locker.unlock()
 
-                if len(self.queries['main']):
+                if len(self.queries['top']):
                     try:
                         self.locker.lockForWrite()
-                        maininfo = self.queries['main'].pop()
-                        query('INSERT INTO SIS VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+                        maininfo = self.queries['top'].pop()
+                        query('INSERT INTO SIStops VALUES(?, ?, ?, ?, ?, ?, ?)',
                               (maininfo[0], maininfo[1], maininfo[2], maininfo[3],
-                               maininfo[4], maininfo[5], maininfo[6], maininfo[7], maininfo[8], maininfo[9]))
+                               maininfo[4], maininfo[5], maininfo[6]))
                     except sqlite3.IntegrityError as err:
                         print(err)
                     finally:
                         self.locker.unlock()
-                if len(self.pics_pool_for_updating_db):
-                    try:
-                        self.locker.lockForWrite()
-                        pic = self.pics_pool_for_updating_db.pop()
-                        if pic[0]:
-                            query('UPDATE SISpic SET picb=? WHERE picaddr=?', (pic[0], pic[1]))
-                            # print('Updated new picture {}'.format(pic[1]))
-                        else:
-                            query('DELETE FROM SISpic WHERE picaddr=?', (pic[1],))
-                            # print('Bad picture deleted {}'.format(pic[1]))
-                    except sqlite3.IntegrityError as err:
-                        print(err)
-                    finally:
-                        self.locker.unlock()
+                # if len(self.pics_pool_for_updating_db):
+                #     try:
+                #         self.locker.lockForWrite()
+                #         pic = self.pics_pool_for_updating_db.pop()
+                #
+                #             # query('UPDATE SISpic SET picb=? WHERE picaddr=?', (pic[0], pic[1]))
+                #         query('insert into picb values(?,?)', (pic[0], pic[1]))
+                #         query('insert into picid values(?)', (pic[0]))
+                #             # print('Updated new picture {}'.format(pic[1]))
+                #         # else:
+                #             # query('DELETE FROM SISpic WHERE picaddr=?', (pic[1],))
+                #             # print('Bad picture deleted {}'.format(pic[1]))
+                #     except sqlite3.IntegrityError as err:
+                #         print(err)
+                #     finally:
+                #         self.locker.unlock()
             finally:
                 connect.commit()
                 connect.close()
 
-    def picUpdate(self, picpak):
-        self.pics_pool_for_updating_db.append(picpak)
-
-
-class SISPicLoader(SISThread):
-    picpak_broadcast = pyqtSignal(tuple)
-
-    def __init__(self, pics_pool_for_downloading, pictures_working_threads, parent=None):
-        super(SISPicLoader, self).__init__(parent)
-        self.pics_pool_for_downloading = pics_pool_for_downloading
-        self.pictures_working_threads = pictures_working_threads
-
-    def run(self):
-        while self.running:
-            try:
-                self.locker.lockForWrite()
-                getjob = self.pics_pool_for_downloading.pop()
-            except IndexError:
-                # print('Out of pictures work, bye.')
-                self.pictures_working_threads[0] -= 1
-                return
-            finally:
-                self.locker.unlock()
-            try:
-                if requests.head(getjob[1], timeout=5).ok is False:
-                    continue
-                bpic = requests.get(getjob[1], timeout=120).content
-                if b'html' not in bpic and None is not bpic:
-                    self.picpak_broadcast.emit((bpic, getjob[1]))
-                else:
-                    self.picpak_broadcast.emit((None, getjob[1]))
-            except requests.exceptions.RequestException:
-                self.picpak_broadcast.emit((None, getjob[1]))
-        self.pictures_working_threads[0] -= 1
+    # def picUpdate(self, picpak):
+    #     self.pics_pool_for_updating_db.append(picpak)
