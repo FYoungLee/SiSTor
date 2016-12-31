@@ -113,6 +113,10 @@ class SISPageLoader(TheDownloader):
         self.task_queues = task_queues
         self.topics_working_threads = topics_working_threads
 
+    def __del__(self):
+        print('[{}]Page thread end.'.format(datetime.datetime.now().strftime('%H:%M:%S')))
+        self.topics_working_threads[0] -= 1
+
     def run(self):
         # extract all downloaded topics from databases.
         # plus those topics in local queue.
@@ -137,7 +141,6 @@ class SISPageLoader(TheDownloader):
                 finally:
                     self.locker.unlock()
             except StopIteration:
-                self.topics_working_threads[0] -= 1
                 return
             finally:
                 connectDB.close()
@@ -171,15 +174,17 @@ class SISTopicLoader(TheDownloader):
         self.thisqueries_pool = sqlqueries_pool
         self.topics_working_threads = topics_working_threads
 
+    def __del__(self):
+        print('[{}]Topic thread end.'.format(datetime.datetime.now().strftime('%H:%M:%S')))
+        self.topics_working_threads[0] -= 1
+
     def run(self):
         while self.running:
             try:
-                job = self.task_queues['topics'].pop()
+                job = self.task_queues['topics'].pop(0)
             except IndexError:
-                self.topics_working_threads[0] -= 1
                 return
             self.download_topics(job)
-        self.topics_working_threads[0] -= 1
 
     def download_topics(self, url_short):
         url = self.baseurl + url_short
@@ -358,15 +363,17 @@ class SISTorLoader(TheDownloader):
         self.thisqueries_pool = sqlqueries_pool
         self.tors_working_threads = tors_working_threads
 
+    def __del__(self):
+        print('[{}]Torrent thread end.'.format(datetime.datetime.now().strftime('%H:%M:%S')))
+        self.topics_working_threads[0] -= 1
+
     def run(self):
         while self.running:
             try:
-                job = self.task_queues['tors'].pop()
+                job = self.task_queues['tors'].pop(0)
             except IndexError:
-                self.tors_working_threads[0] -= 1
                 return
             self.download_tors(job)
-        self.tors_working_threads[0] -= 1
 
     def download_tors(self, job):
         url = self.baseurl + job[1]
@@ -415,12 +422,14 @@ class SISPicLoader(SISThread):
         self.pictures_working_threads = pictures_working_threads
         self.sqlqueries_pool = sqlqueries_pool
 
+    def __del__(self):
+        self.pictures_working_threads[0] -= 1
+
     def run(self):
         while self.running:
             try:
-                job = self.task_queues['pics'].pop()
+                job = self.task_queues['pics'].pop(0)
             except IndexError:
-                self.pictures_working_threads[0] -= 1
                 return
             try:
                 if requests.head(job[1], timeout=5).ok is False:
@@ -436,7 +445,6 @@ class SISPicLoader(SISThread):
                     print('{} is not an image.'.format(job[1]))
             except requests.exceptions.RequestException:
                 pass
-        self.pictures_working_threads[0] -= 1
 
     def isImage(self, byte):
         hexstr = u""
@@ -468,7 +476,7 @@ class SISSql(SISThread):
             try:
                 if len(self.queries['pic']):
                     try:
-                        picinfo = self.queries['pic'].pop()
+                        picinfo = self.queries['pic'].pop(0)
                         query('INSERT INTO PicByte VALUES(?, ?)', (picinfo[0], picinfo[1]))
                         try:
                             query('INSERT INTO PicLink (tid) VALUES(?)', (picinfo[0],))
@@ -479,13 +487,13 @@ class SISSql(SISThread):
                         pass
                 if len(self.queries['tor']):
                     try:
-                        torinfo = self.queries['tor'].pop()
+                        torinfo = self.queries['tor'].pop(0)
                         query('INSERT INTO SISmags VALUES(?, ?)', (torinfo[0], torinfo[1]))
                     except sqlite3.IntegrityError as err:
                         print('Tors inserting err, code', err)
                 if len(self.queries['top']):
                     try:
-                        maininfo = self.queries['top'].pop()
+                        maininfo = self.queries['top'].pop(0)
                         query('INSERT INTO SIStops VALUES(?, ?, ?, ?, ?, ?, ?)',
                               (maininfo[0], maininfo[1], maininfo[2], maininfo[3],
                                maininfo[4], maininfo[5], maininfo[6]))

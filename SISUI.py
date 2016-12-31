@@ -227,7 +227,7 @@ class DownloaderWidget(QWidget):
         pages_threads_layout = QHBoxLayout()
         pages_threads_layout.addWidget(QLabel('PgThreads'))
         self.pages_threads_slider = QSlider(Qt.Horizontal)
-        self.pages_threads_slider.setRange(1, 5)
+        self.pages_threads_slider.setRange(0, 30)
         self.pages_threads_slider.setValue(2)
         pages_threads_layout.addWidget(self.pages_threads_slider)
         page_t_label = QLabel(str(self.pages_threads_slider.value()))
@@ -239,7 +239,7 @@ class DownloaderWidget(QWidget):
         topics_threads_layout = QHBoxLayout()
         topics_threads_layout.addWidget(QLabel('TpThreads'))
         self.tops_threads_silder = QSlider(Qt.Horizontal)
-        self.tops_threads_silder.setRange(1, 30)
+        self.tops_threads_silder.setRange(0, 30)
         self.tops_threads_silder.setValue(15)
         topics_threads_layout.addWidget(self.tops_threads_silder)
         topics_t_label = QLabel(str(self.tops_threads_silder.value()))
@@ -251,7 +251,7 @@ class DownloaderWidget(QWidget):
         tors_threads_layout = QHBoxLayout()
         tors_threads_layout.addWidget(QLabel('TrThreads'))
         self.tors_threads_silder = QSlider(Qt.Horizontal)
-        self.tors_threads_silder.setRange(1, 30)
+        self.tors_threads_silder.setRange(0, 30)
         self.tors_threads_silder.setValue(15)
         tors_threads_layout.addWidget(self.tors_threads_silder)
         tors_t_label = QLabel(str(self.tors_threads_silder.value()))
@@ -263,7 +263,7 @@ class DownloaderWidget(QWidget):
         pics_thread_layout = QHBoxLayout()
         pics_thread_layout.addWidget(QLabel('PcThreads'))
         self.pics_threads_silder = QSlider(Qt.Horizontal)
-        self.pics_threads_silder.setRange(1, 500)
+        self.pics_threads_silder.setRange(0, 500)
         self.pics_threads_silder.setValue(250)
         pics_thread_layout.addWidget(self.pics_threads_silder)
         pics_t_label = QLabel(str(self.pics_threads_silder.value()))
@@ -299,7 +299,7 @@ class DownloaderWidget(QWidget):
         else:
             return
         try:
-            req = requests.head(self.url_line.text(), proxies=proxy, timeout=10)
+            req = requests.head(self.url_line.text(), proxies=proxy, timeout=2)
         except requests.exceptions.RequestException:
             self.url_label.setText('Failed')
             return
@@ -339,12 +339,13 @@ class DownloaderWidget(QWidget):
         return ret
 
     def start_btn_clicked(self):
-        self.check_url()
+        if 'Start' not in self.start_btn.text():
+            self.check_url()
         if 'Start' in self.start_btn.text():
-            if 'OK' not in self.url_label.text():
-                QMessageBox().critical(self, 'URL error', 'In case the url is not correct or did not verify, try again.\n'
-                                                          '站点还未连通或者不可用，不能下载，请重试。')
-                return
+            # if 'OK' not in self.url_label.text():
+            #     QMessageBox().critical(self, 'URL error', 'In case the url is not correct or did not verify, try again.\n'
+            #                                               '站点还未连通或者不可用，不能下载，请重试。')
+            #     return
             if self.pages_line.text().isdigit() is False:
                 QMessageBox().critical(self, 'Pages error', 'How many pages you want to download?\n请输入正确的下载页数')
                 return
