@@ -1,9 +1,11 @@
-# What's this
+### What's it
 * This is my crawler framework, it provides both downloading and displaying function, it highly efficiency with multiply threads co-work.
 
-# Overview
+### Overview
 
 ![image](https://github.com/FYoungLee/SiSTor/blob/master/20161230042019.png)
+
+### Table of content
 
 #####[SIS.py](SIS.py)
 * `SISThread` : Base object of all downloaders, it provides the locker and threads working control signal.
@@ -21,9 +23,9 @@
 * `SISMainWindow`
  * `DownloaderWidget` : Downloading controller and downloading progress display.
  * `BrowserWidget` : Displaying data from sqlite databases.
-   *   `myTable` : The child widget in BrowserWidget, inherit from QListTable, add and modified some functions.
-   *  `SisPicWin` : The child widget in BrowserWidget, also modified some event functions.
-   *   `PicList` : child widget of sisPicWin
+   * `myTable` : The child widget in BrowserWidget, inherit from QListTable, add and modified some functions.
+   * `SisPicWin` : The child widget in BrowserWidget, also modified some event functions.
+     - `PicList` : child widget of sisPicWin
 
 
 
