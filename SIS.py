@@ -14,11 +14,9 @@ import sqlite3
 import flatbencode
 import sys
 import hashlib
-import struct
 from PyQt5.QtCore import QThread
 from PyQt5.QtCore import pyqtSignal
 from PyQt5.QtCore import QReadWriteLock
-import tor2mag
 
 
 class SISThread(QThread):
@@ -57,11 +55,17 @@ class TheDownloader(SISThread):
 
     def make_soup(self, url):
         response = self.request_with_proxy(url)
-        return BeautifulSoup(response.content.decode('gbk', 'ignore'), 'lxml')
+        if response:
+            return BeautifulSoup(response.content.decode('gbk', 'ignore'), 'lxml')
+        return None
 
     def request_with_proxy(self, url):
+        t_times = 10
         while True:
-            proxy = self.get_proxy()
+            if t_times:
+                proxy = self.get_proxy()
+            else:
+                return None
             try:
                 return requests.get(url, headers=self.get_headers(), cookies=self.cookies, proxies=proxy, timeout=10)
             except requests.exceptions.RequestException:
@@ -77,12 +81,14 @@ class TheDownloader(SISThread):
                     try:
                         self.locker.lockForWrite()
                         self.proxies_pool.pop(self.proxies_pool.index(proxy['http']))
-                        print('{} popped.'.format(proxy['http']))
+                        # print('{} popped.'.format(proxy['http']))
                     except ValueError:
-                        print('{} has already popped.'.format(proxy['http']))
+                        # print('{} has already popped.'.format(proxy['http']))
+                        pass
                     finally:
                         self.locker.unlock()
-                time.sleep(3)
+                time.sleep(1)
+                t_times -= 1
 
     def emitInfo(self, text):
         self.send_text.emit('[{t}] {info}'.format(t=datetime.datetime.now().strftime('%H:%M:%S'), info=text))
@@ -98,22 +104,26 @@ class SISPageLoader(TheDownloader):
         self.topics_working_threads = topics_working_threads
 
     def run(self):
-        connectDB = sqlite3.connect('SISDB.sqlite')
         # extract all downloaded topics from databases.
         allUrlDownloaded = ['thread-' + x[0] for x in connectDB.cursor().execute('SELECT tid FROM SIStops').fetchall()]
         # plus those topics in local queue.
         allUrlDownloaded.extend([x.split('.')[0] for x in self.task_queues['topics']])
-        connectDB.close()
         while self.running:
+            connectDB = sqlite3.connect('SISDB.sqlite')
             try:
                 __tps = self.extract_info_from_page(next(self.pages_generator))
-                try:
-                    __tps = list(filter(lambda x: x[0].split('.')[0] not in allUrlDownloaded, __tps))
-                except TypeError:
-                    pass
+                if __tps is None:
+                    continue
+                unfinished_tops = []
+                for each in __tps:
+                    tid = each.split('.')[0].replace('thread-', '')
+                    rst = connectDB.cursor().execute('SELECT tid FROM SIStops WHERE tid=?', (tid,)).fetchone()
+                    if rst is None:
+                        continue
+                    unfinished_tops.append(each)
                 try:
                     self.locker.lockForWrite()
-                    self.task_queues['topics'].extend(__tps)
+                    self.task_queues['topics'].extend(unfinished_tops)
                 except TypeError:
                     pass
                 finally:
@@ -121,6 +131,8 @@ class SISPageLoader(TheDownloader):
             except StopIteration:
                 self.topics_working_threads[0] -= 1
                 return
+            finally:
+                connectDB.close()
 
     def extract_info_from_page(self, page):
         ret = []
@@ -157,7 +169,6 @@ class SISTopicLoader(TheDownloader):
                 self.locker.lockForWrite()
                 job = self.task_queues['topics'].pop()
             except IndexError:
-                print('Out of topics work, bye.')
                 self.topics_working_threads[0] -= 1
                 return
             finally:
@@ -165,40 +176,67 @@ class SISTopicLoader(TheDownloader):
             self.download_topics(job)
         self.topics_working_threads[0] -= 1
 
-    def download_topics(self, url):
-        url = self.baseurl + url
-        topicsoup = self.make_soup(url)
+    def download_topics(self, url_short):
+        url = self.baseurl + url_short
+        obj = self.make_soup(url)
+        if obj is None:
+            print('{} Loading failed, put job back to queue.'.format(url_short))
+            try:
+                self.locker.lockForWrite()
+                self.task_queues['topics'].append(url_short)
+            finally:
+                self.locker.unlock()
+            return
+        t_id = url_short.split('.')[0].replace('thread-', '')
+        # crawl all topics info
+        t_type, t_name, t_censor, t_thumbup, t_date, t_category = 'Unkown', 'Unkown', 2, 0, 57600.0, 0
         try:
-            # crawl all topics info
-            t_id = url.split('.')[0].replace('thread-', '')
-            t_type = topicsoup.find('h1').a.text[1:-1]
-            t_name = topicsoup.find('h1').a.next_sibling
-            t_censor = self.isMosic(topicsoup)
-            t_thumbup = topicsoup.find('a', {'id': 'ajax_thanks'}).text
-            t_date = re.search(r'(\d+-\d+-\d+)', topicsoup.find('div', {'class': 'postinfo'}).text).group(1)
-            if 'asia' in topicsoup.find('div', {'id': 'nav'}).text.lower():
+            page_tors = obj.find_all('a', {'href': re.compile(r'attachment')})
+            for each in page_tors:
+                self.task_queues['tors'].append((t_id, each['href']))
+        except AttributeError as err:
+            print('{} extract torrents err, {} : Line {}'.format(url, err, sys.exc_info()[2].tb_frame.f_lineno))
+            return
+        try:
+            t_type = obj.find('h1').a.text[1:-1]
+        except AttributeError as err:
+            print('{} extract type err, {} : Line {}'.format(url, err, sys.exc_info()[2].tb_frame.f_lineno))
+        try:
+            t_name = obj.find('h1').a.next_sibling.strip()
+        except AttributeError as err:
+            print('{} extract name err, {} : Line {}'.format(url, err, sys.exc_info()[2].tb_frame.f_lineno))
+        try:
+            t_censor = self.isMosic(obj)
+        except AttributeError as err:
+            print('{} extract censor err, {} : Line {}'.format(url, err, sys.exc_info()[2].tb_frame.f_lineno))
+        try:
+            t_thumbup = obj.find('a', {'id': 'ajax_thanks'}).text
+        except AttributeError as err:
+            print('{} extract thumbup err, {} : Line {}'.format(url, err, sys.exc_info()[2].tb_frame.f_lineno))
+        try:
+            t_date = re.search(r'(\d+-\d+-\d+)', obj.find('div', {'class': 'postinfo'}).text).group(1)
+        except AttributeError as err:
+            print('{} extract date err, {} : Line {}'.format(url, err, sys.exc_info()[2].tb_frame.f_lineno))
+        try:
+            catey_text = obj.find('div', {'id': 'nav'}).text.lower()
+            if 'asia' in catey_text:
                 t_category = 1
-            elif 'western' in topicsoup.find('div', {'id': 'nav'}).text.lower():
+            elif 'western' in catey_text:
                 t_category = 2
-            elif 'anime' in topicsoup.find('div', {'id': 'nav'}).text.lower():
+            elif 'anime' in catey_text:
                 t_category = 3
-            else:
-                t_category = 0
             try:
                 self.locker.lockForWrite()
                 self.thisqueries_pool['top'].append((t_id, t_type, t_name, t_censor, t_thumbup, t_date, t_category))
             finally:
                 self.locker.unlock()
             # push tors into queue
-            try:
-                page_tors = topicsoup.find_all('a', {'href': re.compile(r'attachment')})
-                for each in page_tors:
-                    self.task_queues['tors'].append((t_id, each['href']))
-            except AttributeError as err:
-                print('{} : Line {}'.format(err, sys.exc_info()[2].tb_frame.f_lineno))
-                return
-            # push pics into queue
-            for pic in topicsoup.find('div', {'class': 't_msgfont'}).find_all('img', {'src': re.compile(r'jpg|png')}):
+        except AttributeError as err:
+            print('extract category err, {} : Line {}'.format(err, sys.exc_info()[2].tb_frame.f_lineno))
+
+        # push pics into queue
+        try:
+            for pic in obj.find('div', {'class': 't_msgfont'}).find_all('img', {'src': re.compile(r'jpg|png')}):
                 pic_url = pic['src']
                 try:
                     self.locker.lockForWrite()
@@ -206,8 +244,8 @@ class SISTopicLoader(TheDownloader):
                 finally:
                     self.locker.unlock()
         except AttributeError as err:
-            print('{} : Line {}'.format(err, sys.exc_info()[2].tb_frame.f_lineno))
-            return
+            print('extract pictures err, {} : Line {}'.format(err, sys.exc_info()[2].tb_frame.f_lineno))
+        self.emitInfo('({}) {} Downloaded.'.format(t_id, t_name))
 
     def isMosic(self, obj):
         try:
@@ -222,90 +260,90 @@ class SISTopicLoader(TheDownloader):
         else:
             return 2
 
-    def download_content_from_topic(self, topics):
-        tar_page = self.baseurl + topics[0]
-        t_id = topics[0].split('.')[0]
-        t_type = topics[1]
-        t_name = topics[2]
-        t_mosaic = topics[3]
-        t_thumbup = topics[4]
-        t_date = topics[5]
-        t_size = topics[6]
-        try:
-            if 'G' in t_size:
-                t_size = float(re.match(r'(\d+\.?\d+)', t_size).group(1)) * 1000
-            else:
-                t_size = float(re.match(r'(\d+\.?\d+)', t_size).group(1))
-        except (AttributeError, ValueError):
-            t_size = 0
-        t_mtype = topics[7]
-        t_catey = topics[8]
-        self.emitInfo('Downloading {}'.format(t_name))
-        pagesoup = self.make_soup(tar_page)
-        # get movie information
-        try:
-            page_info = pagesoup.find('td', {'class': 'postcontent'})
-        except AttributeError:
-            self.emitInfo('{} failed.'.format(tar_page))
-            return
-
-        self.insertToQueriesPool(t_id, t_name, t_type, t_mosaic, t_thumbup, t_date, t_size, t_mtype, t_catey, page_info)
-
-    def insertToQueriesPool(self, tid, tname, ttype, tmosaic, tthumbup, tdate, tsize, tmtype, tcatey, page_info):
-        try:
-            page_tors = page_info.find_all('a', {'href': re.compile(r'attachment')})
-        except AttributeError:
-            return
-        if page_tors is None:
-            return
-        # download torrents
-        for each_attach in page_tors:
-            tor = self.baseurl + each_attach['href']
-            tries = 5
-            while tries:
-                try:
-                    # print('Download {}'.format(each_attach.text))
-                    # torbyte = requests.get(tor, headers=self.get_headers(), timeout=10).content
-                    torbyte = self.request_with_proxy(tor).content
-                    magaddr = tor2mag.decodeTor(torbyte)
-                    try:
-                        self.locker.lockForWrite()
-                        self.thisqueries_pool['tor'].append((tid, magaddr))
-                    finally:
-                        self.locker.unlock()
-                    break
-                except requests.exceptions.RequestException:
-                    print('Torrent "{}" download failed, try again.'.format(tor))
-                    tries -= 1
-                    time.sleep(1)
-                    continue
-                except flatbencode.DecodingError:
-                    self.thisqueries_pool['tor'].append((tid, tor))
-                    print('{} decode failed.'.format(tor))
-                    break
-        try:
-            tbrief = page_info.find('div', {'class': 't_msgfont'}).text
-        except AttributeError:
-            tbrief = '没有'
-        if tmosaic == 2:
-            if '无码' in tname or '无码' in tbrief or '無碼' in tbrief or '無碼' in tname:
-                tmosaic = 0
-            elif '有码' in tname or '有码' in tbrief or '有碼' in tname or '有碼' in tbrief:
-                tmosaic = 1
-        try:
-            self.locker.lockForWrite()
-            self.thisqueries_pool['main']\
-                .append((tid, ttype, tname, tmosaic, tthumbup, tdate, tsize, tmtype, tbrief, tcatey))
-        finally:
-            self.locker.unlock()
-
-        for each_pic in page_info.find_all('img', {'src': re.compile(r'jpg|png')}):
-            pic_url = each_pic['src']
-            try:
-                self.locker.lockForWrite()
-                self.thisqueries_pool['pic'].append((tid, pic_url))
-            finally:
-                self.locker.unlock()
+    # def download_content_from_topic(self, topics):
+    #     tar_page = self.baseurl + topics[0]
+    #     t_id = topics[0].split('.')[0]
+    #     t_type = topics[1]
+    #     t_name = topics[2]
+    #     t_mosaic = topics[3]
+    #     t_thumbup = topics[4]
+    #     t_date = topics[5]
+    #     t_size = topics[6]
+    #     try:
+    #         if 'G' in t_size:
+    #             t_size = float(re.match(r'(\d+\.?\d+)', t_size).group(1)) * 1000
+    #         else:
+    #             t_size = float(re.match(r'(\d+\.?\d+)', t_size).group(1))
+    #     except (AttributeError, ValueError):
+    #         t_size = 0
+    #     t_mtype = topics[7]
+    #     t_catey = topics[8]
+    #     self.emitInfo('Downloading {}'.format(t_name))
+    #     pagesoup = self.make_soup(tar_page)
+    #     # get movie information
+    #     try:
+    #         page_info = pagesoup.find('td', {'class': 'postcontent'})
+    #     except AttributeError:
+    #         self.emitInfo('{} failed.'.format(tar_page))
+    #         return
+    #
+    #     self.insertToQueriesPool(t_id, t_name, t_type, t_mosaic, t_thumbup, t_date, t_size, t_mtype, t_catey, page_info)
+    #
+    # def insertToQueriesPool(self, tid, tname, ttype, tmosaic, tthumbup, tdate, tsize, tmtype, tcatey, page_info):
+    #     try:
+    #         page_tors = page_info.find_all('a', {'href': re.compile(r'attachment')})
+    #     except AttributeError:
+    #         return
+    #     if page_tors is None:
+    #         return
+    #     # download torrents
+    #     for each_attach in page_tors:
+    #         tor = self.baseurl + each_attach['href']
+    #         tries = 5
+    #         while tries:
+    #             try:
+    #                 # print('Download {}'.format(each_attach.text))
+    #                 # torbyte = requests.get(tor, headers=self.get_headers(), timeout=10).content
+    #                 torbyte = self.request_with_proxy(tor).content
+    #                 magaddr = tor2mag.decodeTor(torbyte)
+    #                 try:
+    #                     self.locker.lockForWrite()
+    #                     self.thisqueries_pool['tor'].append((tid, magaddr))
+    #                 finally:
+    #                     self.locker.unlock()
+    #                 break
+    #             except requests.exceptions.RequestException:
+    #                 print('Torrent "{}" download failed, try again.'.format(tor))
+    #                 tries -= 1
+    #                 time.sleep(1)
+    #                 continue
+    #             except flatbencode.DecodingError:
+    #                 self.thisqueries_pool['tor'].append((tid, tor))
+    #                 print('{} decode failed.'.format(tor))
+    #                 break
+    #     try:
+    #         tbrief = page_info.find('div', {'class': 't_msgfont'}).text
+    #     except AttributeError:
+    #         tbrief = '没有'
+    #     if tmosaic == 2:
+    #         if '无码' in tname or '无码' in tbrief or '無碼' in tbrief or '無碼' in tname:
+    #             tmosaic = 0
+    #         elif '有码' in tname or '有码' in tbrief or '有碼' in tname or '有碼' in tbrief:
+    #             tmosaic = 1
+    #     try:
+    #         self.locker.lockForWrite()
+    #         self.thisqueries_pool['main']\
+    #             .append((tid, ttype, tname, tmosaic, tthumbup, tdate, tsize, tmtype, tbrief, tcatey))
+    #     finally:
+    #         self.locker.unlock()
+    #
+    #     for each_pic in page_info.find_all('img', {'src': re.compile(r'jpg|png')}):
+    #         pic_url = each_pic['src']
+    #         try:
+    #             self.locker.lockForWrite()
+    #             self.thisqueries_pool['pic'].append((tid, pic_url))
+    #         finally:
+    #             self.locker.unlock()
 
 
 class SISTorLoader(TheDownloader):
@@ -321,7 +359,6 @@ class SISTorLoader(TheDownloader):
                 self.locker.lockForWrite()
                 job = self.task_queues['tors'].pop()
             except IndexError:
-                print('Out of topics work, bye.')
                 self.tors_working_threads[0] -= 1
                 return
             finally:
@@ -332,11 +369,19 @@ class SISTorLoader(TheDownloader):
     def download_tors(self, job):
         url = self.baseurl + job[1]
         req = self.request_with_proxy(url)
+        if req is None:
+            print('{} downloading failed, back to queue.'.format(url))
+            try:
+                self.locker.lockForWrite()
+                self.task_queues['tors'].append(job)
+            finally:
+                self.locker.unlock()
+            return
         try:
             magnet = self.magDecoder(req.content)
             self.thisqueries_pool['tor'].append((job[0], magnet))
-        except flatbencode.DecodingError as err:
-            print('{} : Line {}'.format(err, sys.exc_info()[2].tb_frame.f_lineno))
+        except flatbencode.DecodingError:
+            print('{} decoding failed, back to queue.'.format(url))
             try:
                 self.locker.lockForWrite()
                 self.task_queues['tors'].append(job)
@@ -365,7 +410,6 @@ class SISPicLoader(SISThread):
                 self.locker.lockForWrite()
                 job = self.task_queues['pics'].pop()
             except IndexError:
-                # print('Out of pictures work, bye.')
                 self.pictures_working_threads[0] -= 1
                 return
             finally:
@@ -373,35 +417,28 @@ class SISPicLoader(SISThread):
             try:
                 if requests.head(job[1], timeout=5).ok is False:
                     continue
-                bpic = requests.get(job[1], timeout=120).content
+                bpic = requests.get(job[1], timeout=150).content
                 if self.isImage(bpic):
                     self.sqlqueries_pool['pic'].append((job[0], bpic))
-                # if b'html' not in bpic and None is not bpic:
-                #     self.picpak_broadcast.emit((job[0], bpic))
-                # else:
-                    # self.picpak_broadcast.emit((None, getjob[1]))
+                else:
+                    print('{} is not an image.'.format(job[1]))
             except requests.exceptions.RequestException:
-                # self.picpak_broadcast.emit((None, getjob[1]))
                 pass
         self.pictures_working_threads[0] -= 1
 
-    def bytes2hex(self, bytes):
+    def isImage(self, byte):
         hexstr = u""
-        for i in range(20):
-            t = u"%x" % bytes[i]
+        for i in range(10):
+            t = u"%x" % byte[i]
             if len(t) % 2:
                 hexstr += u"0"
             hexstr += t
-        return hexstr.upper()
-
-    def isImage(self, byte):
-        typeList = {"FFD8FF": True, "89504E47": True}
-        for hcode in typeList.keys():
-            f_hcode = self.bytes2hex(byte)
-            if hcode in f_hcode:
-                return True
-            else:
-                return False
+        img_header = hexstr.upper()
+        if 'FFD8FF' in img_header or '89504E47' in img_header:
+            return True
+        else:
+            print('Image header: {} does not look like an image'.format(img_header))
+            return False
 
 
 class SISSql(SISThread):
@@ -422,9 +459,13 @@ class SISSql(SISThread):
                         self.locker.lockForWrite()
                         picinfo = self.queries['pic'].pop()
                         query('INSERT INTO PicByte VALUES(?, ?)', (picinfo[0], picinfo[1]))
-                        query('INSERT INTO PicLink (tid) VALUES(?)', (picinfo[0],))
+                        try:
+                            query('INSERT INTO PicLink (tid) VALUES(?)', (picinfo[0],))
+                        except sqlite3.IntegrityError:
+                            pass
                     except sqlite3.IntegrityError as err:
-                        print(err)
+                        # print('Pics inserting err, code: ', err)
+                        pass
                     finally:
                         self.locker.unlock()
                 if len(self.queries['tor']):
@@ -433,7 +474,7 @@ class SISSql(SISThread):
                         torinfo = self.queries['tor'].pop()
                         query('INSERT INTO SISmags VALUES(?, ?)', (torinfo[0], torinfo[1]))
                     except sqlite3.IntegrityError as err:
-                        print(err)
+                        print('Tors inserting err, code', err)
                     finally:
                         self.locker.unlock()
 
@@ -445,28 +486,9 @@ class SISSql(SISThread):
                               (maininfo[0], maininfo[1], maininfo[2], maininfo[3],
                                maininfo[4], maininfo[5], maininfo[6]))
                     except sqlite3.IntegrityError as err:
-                        print(err)
+                        print('Tops inserting err, code', err)
                     finally:
                         self.locker.unlock()
-                # if len(self.pics_pool_for_updating_db):
-                #     try:
-                #         self.locker.lockForWrite()
-                #         pic = self.pics_pool_for_updating_db.pop()
-                #
-                #             # query('UPDATE SISpic SET picb=? WHERE picaddr=?', (pic[0], pic[1]))
-                #         query('insert into picb values(?,?)', (pic[0], pic[1]))
-                #         query('insert into picid values(?)', (pic[0]))
-                #             # print('Updated new picture {}'.format(pic[1]))
-                #         # else:
-                #             # query('DELETE FROM SISpic WHERE picaddr=?', (pic[1],))
-                #             # print('Bad picture deleted {}'.format(pic[1]))
-                #     except sqlite3.IntegrityError as err:
-                #         print(err)
-                #     finally:
-                #         self.locker.unlock()
             finally:
                 connect.commit()
                 connect.close()
-
-    # def picUpdate(self, picpak):
-    #     self.pics_pool_for_updating_db.append(picpak)

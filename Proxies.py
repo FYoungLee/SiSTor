@@ -32,8 +32,8 @@ class ProxiesThread(QThread):
                     proxy = sp[0].text + ':' + sp[1].text
                     try:
                         if requests.head(self.test_url, proxies={'http': proxy}, headers={'User-Agent': self.headers}, timeout=3).ok:
-                            print('[{}]({}){} is good'.format(datetime.datetime.now().strftime('%H:%M:%S'), self.which,
-                                                              proxy))
+                            # print('[{}]({}){} is good'.format(datetime.datetime.now().strftime('%H:%M:%S'), self.which,
+                            #                                   proxy))
                             self.proxies_pool.append(proxy)
                     except requests.exceptions.RequestException:
                         continue
@@ -50,8 +50,8 @@ class ProxiesThread(QThread):
                     proxy = sp[1].text + ':' + sp[2].text
                     try:
                         if requests.head(self.test_url, proxies={'http': proxy}, headers={'User-Agent': self.headers}, timeout=3).ok:
-                            print('[{}]({}){} is good'.format(datetime.datetime.now().strftime('%H:%M:%S'), self.which,
-                                                              proxy))
+                            # print('[{}]({}){} is good'.format(datetime.datetime.now().strftime('%H:%M:%S'), self.which,
+                            #                                   proxy))
                             self.proxies_pool.append(proxy)
                     except requests.exceptions.RequestException:
                         continue

@@ -7,12 +7,6 @@ from PyQt5.QtWidgets import QWidget, QPushButton, QHBoxLayout, QVBoxLayout, QLab
 from PyQt5.QtCore import Qt, QSize, pyqtSignal, QUrl
 from PyQt5.Qt import QPixmap, QDesktopServices, QIcon, QScrollArea
 
-# Page_Threads = 30
-Topic_Threads = 30
-Picture_Threads = 300
-# Page_Threads = 1
-# Topic_Threads = 1
-# Picture_Threads = 1
 
 class SISMainWindow(QWidget):
     def __init__(self, parent=None):
@@ -228,20 +222,71 @@ class DownloaderWidget(QWidget):
         # self.main_box.addLayout(self.thread_box)
         self.main_box.addLayout(btnlayout)
 
+        threads_control_layout = QVBoxLayout()
+
+        pages_threads_layout = QHBoxLayout()
+        pages_threads_layout.addWidget(QLabel('PgThreads'))
+        self.pages_threads_slider = QSlider(Qt.Horizontal)
+        self.pages_threads_slider.setRange(1, 5)
+        self.pages_threads_slider.setValue(2)
+        pages_threads_layout.addWidget(self.pages_threads_slider)
+        page_t_label = QLabel(str(self.pages_threads_slider.value()))
+        page_t_label.setFixedWidth(20)
+        pages_threads_layout.addWidget(page_t_label)
+        self.pages_threads_slider.valueChanged.connect(lambda x: page_t_label.setText(str(x)))
+        threads_control_layout.addLayout(pages_threads_layout)
+
+        topics_threads_layout = QHBoxLayout()
+        topics_threads_layout.addWidget(QLabel('TpThreads'))
+        self.tops_threads_silder = QSlider(Qt.Horizontal)
+        self.tops_threads_silder.setRange(1, 30)
+        self.tops_threads_silder.setValue(15)
+        topics_threads_layout.addWidget(self.tops_threads_silder)
+        topics_t_label = QLabel(str(self.tops_threads_silder.value()))
+        topics_t_label.setFixedWidth(20)
+        topics_threads_layout.addWidget(topics_t_label)
+        self.tops_threads_silder.valueChanged.connect(lambda x: topics_t_label.setText(str(x)))
+        threads_control_layout.addLayout(topics_threads_layout)
+
+        tors_threads_layout = QHBoxLayout()
+        tors_threads_layout.addWidget(QLabel('TrThreads'))
+        self.tors_threads_silder = QSlider(Qt.Horizontal)
+        self.tors_threads_silder.setRange(1, 30)
+        self.tors_threads_silder.setValue(15)
+        tors_threads_layout.addWidget(self.tors_threads_silder)
+        tors_t_label = QLabel(str(self.tors_threads_silder.value()))
+        tors_t_label.setFixedWidth(20)
+        tors_threads_layout.addWidget(tors_t_label)
+        self.tors_threads_silder.valueChanged.connect(lambda x: tors_t_label.setText(str(x)))
+        threads_control_layout.addLayout(tors_threads_layout)
+
+        pics_thread_layout = QHBoxLayout()
+        pics_thread_layout.addWidget(QLabel('PcThreads'))
+        self.pics_threads_silder = QSlider(Qt.Horizontal)
+        self.pics_threads_silder.setRange(1, 500)
+        self.pics_threads_silder.setValue(250)
+        pics_thread_layout.addWidget(self.pics_threads_silder)
+        pics_t_label = QLabel(str(self.pics_threads_silder.value()))
+        pics_t_label.setFixedWidth(20)
+        pics_thread_layout.addWidget(pics_t_label)
+        self.pics_threads_silder.valueChanged.connect(lambda x: pics_t_label.setText(str(x)))
+        threads_control_layout.addLayout(pics_thread_layout)
+
         self.output_box = QVBoxLayout()
         self.output_window = QTextBrowser()
         self.output_window.setMinimumWidth(640)
-        # self.progress_bar = QProgressBar()
-        # self.progress_bar.setRange(0, 100)
         self.progress_label = QLabel()
         self.progress_box = QHBoxLayout()
-        # self.progress_box.addWidget(self.progress_bar)
         self.progress_box.addWidget(self.progress_label)
         self.output_box.addWidget(self.output_window)
         self.output_box.addLayout(self.progress_box)
 
+        upper_layout = QHBoxLayout()
+        upper_layout.addLayout(self.main_box)
+        upper_layout.addLayout(threads_control_layout)
+
         downloaderLayout = QVBoxLayout()
-        downloaderLayout.addLayout(self.main_box)
+        downloaderLayout.addLayout(upper_layout)
         downloaderLayout.addLayout(self.output_box)
 
         self.setLayout(downloaderLayout)
@@ -290,6 +335,7 @@ class DownloaderWidget(QWidget):
         return ret
 
     def start_btn_clicked(self):
+        self.check_url()
         if 'Start' in self.start_btn.text():
             if 'OK' not in self.url_label.text():
                 QMessageBox().critical(self, 'URL error', 'In case the url is not correct or did not verify, try again.\n'
@@ -305,8 +351,8 @@ class DownloaderWidget(QWidget):
         self.stop_thread_signal.emit(False)
 
     def timerEvent(self, QTimerEvent):
-        self.progress_label.setText('Topics Remain: {}\tTors Remain: {}\tPics Remain: {}'
-                                    '\tTopic Threads: {}\tPicture Threads: {}\tProxies: {}'
+        self.progress_label.setText('Topics Remain: {}   Tors Remain: {}   Pics Remain: {}'
+                                    '   Forum Threads: {}   Picture Threads: {}   Proxies: {}'
                                     .format(len(self.task_queues['topics']),
                                             len(self.task_queues['tors']),
                                             len(self.task_queues['pics']),
@@ -316,14 +362,15 @@ class DownloaderWidget(QWidget):
         if 'Download' not in self.start_btn.text():
             return
         if len(self.task_queues['pics']) > self.pictures_working_threads[0] \
-                and self.pictures_working_threads[0] < Picture_Threads:
-            th = SIS.SISPicLoader(self.task_queues, self.pictures_working_threads, self)
+                and self.pictures_working_threads[0] < self.pics_threads_silder.value():
+            th = SIS.SISPicLoader(self.task_queues, self.sqlqueries_pool, self.pictures_working_threads, self)
             # th.picpak_broadcast.connect(self.sqloperator.picUpdate)
             # self.stop_thread_signal.connect(th.setRunning)
             th.start()
             self.pictures_working_threads[0] += 1
 
-        if len(self.task_queues['topics']) > self.topics_working_threads[0] and self.topics_working_threads[0] < Topic_Threads:
+        if len(self.task_queues['topics']) > self.topics_working_threads[0] \
+                and self.topics_working_threads[0] < self.tops_threads_silder.value():
             th = SIS.SISTopicLoader(self.task_queues, self.sqlqueries_pool, self.topics_working_threads,
                                     self.proxies_pool, self.cookies, self)
             th.send_text.connect(self.infoRec)
@@ -331,7 +378,15 @@ class DownloaderWidget(QWidget):
             th.start()
             self.topics_working_threads[0] += 1
 
-        if len(self.task_queues['topics']) == 0 and self.topics_working_threads[0] < 3:
+        if len(self.task_queues['tors']) > 0 and self.topics_working_threads[0] < self.tors_threads_silder.value():
+            tth = SIS.SISTorLoader(self.task_queues, self.sqlqueries_pool, self.topics_working_threads,
+                                    self.proxies_pool, self.cookies, self)
+            tth.send_text.connect(self.infoRec)
+            self.stop_thread_signal.connect(tth.setRunning)
+            tth.start()
+            self.topics_working_threads[0] += 1
+
+        if len(self.task_queues['topics']) == 0 and self.topics_working_threads[0] < self.pages_threads_slider.value():
             if self.pages_generator is None:
                 self.pages_generator = (self.url_line.text() + self.sub_forum_addr() + '{}.html'.format(each)
                              for each in range(1, int(self.pages_line.text()) + 1))
@@ -340,14 +395,6 @@ class DownloaderWidget(QWidget):
             td.send_text.connect(self.infoRec)
             self.stop_thread_signal.connect(td.setRunning)
             td.start()
-            self.topics_working_threads[0] += 1
-
-        if len(self.task_queues['tors']) > 0 and self.topics_working_threads[0] < 20:
-            tth = SIS.SISTorLoader(self.task_queues, self.sqlqueries_pool, self.topics_working_threads,
-                                    self.proxies_pool, self.cookies, self)
-            tth.send_text.connect(self.infoRec)
-            self.stop_thread_signal.connect(tth.setRunning)
-            tth.start()
             self.topics_working_threads[0] += 1
 
     def infoRec(self, info):
