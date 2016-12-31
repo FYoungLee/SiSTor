@@ -1,5 +1,5 @@
 import SIS, SISDisplay, Proxies
-import os, requests, sqlite3, json
+import os, requests, sqlite3, json, random
 from datetime import datetime
 from PyQt5.QtWidgets import QWidget, QPushButton, QHBoxLayout, QVBoxLayout, QLabel, QComboBox, QLineEdit, \
      QMessageBox, QTextBrowser, QTabWidget, QTableWidget, QTableWidgetItem, QHeaderView, QListWidget, QListView, \
@@ -294,8 +294,12 @@ class DownloaderWidget(QWidget):
         #################################################
 
     def check_url(self):
+        if len(self.proxies_pool):
+            proxy = random.choice(self.proxies_pool)
+        else:
+            return
         try:
-            req = requests.head(self.url_line.text(), timeout=2)
+            req = requests.head(self.url_line.text(), proxies=proxy, timeout=10)
         except requests.exceptions.RequestException:
             self.url_label.setText('Failed')
             return
@@ -369,6 +373,14 @@ class DownloaderWidget(QWidget):
             th.start()
             self.pictures_working_threads[0] += 1
 
+        if len(self.task_queues['tors']) > 0 and self.topics_working_threads[0] < self.tors_threads_silder.value():
+            tth = SIS.SISTorLoader(self.task_queues, self.sqlqueries_pool, self.topics_working_threads,
+                                    self.proxies_pool, self.cookies, self)
+            tth.send_text.connect(self.infoRec)
+            self.stop_thread_signal.connect(tth.setRunning)
+            tth.start()
+            self.topics_working_threads[0] += 1
+
         if len(self.task_queues['topics']) > self.topics_working_threads[0] \
                 and self.topics_working_threads[0] < self.tops_threads_silder.value():
             th = SIS.SISTopicLoader(self.task_queues, self.sqlqueries_pool, self.topics_working_threads,
@@ -376,14 +388,6 @@ class DownloaderWidget(QWidget):
             th.send_text.connect(self.infoRec)
             self.stop_thread_signal.connect(th.setRunning)
             th.start()
-            self.topics_working_threads[0] += 1
-
-        if len(self.task_queues['tors']) > 0 and self.topics_working_threads[0] < self.tors_threads_silder.value():
-            tth = SIS.SISTorLoader(self.task_queues, self.sqlqueries_pool, self.topics_working_threads,
-                                    self.proxies_pool, self.cookies, self)
-            tth.send_text.connect(self.infoRec)
-            self.stop_thread_signal.connect(tth.setRunning)
-            tth.start()
             self.topics_working_threads[0] += 1
 
         if len(self.task_queues['topics']) == 0 and self.topics_working_threads[0] < self.pages_threads_slider.value():
