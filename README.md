@@ -1,3 +1,6 @@
+# What's this
+* This is my crawler framework, it provides both downloading and displaying function, it highly efficiency with multiply threads co-work.
+
 # Overview
 
 ![image](https://github.com/FYoungLee/SiSTor/blob/master/20161230042019.png)
