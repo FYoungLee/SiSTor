@@ -169,6 +169,8 @@ class SISPageLoader(TheDownloader):
 
 
 class SISTopicLoader(TheDownloader):
+    bad_tops_recorder = {}
+
     def __init__(self, task_queues, sqlqueries_pool, topics_working_threads, proxies_pool, cookies=None, parent=None):
         super(SISTopicLoader, self).__init__(proxies_pool, cookies, parent)
         self.task_queues = task_queues
@@ -192,11 +194,7 @@ class SISTopicLoader(TheDownloader):
         obj = self.make_soup(url)
         if obj is None:
             print('{} Loading failed, put job back to queue.'.format(url))
-            try:
-                self.locker.lockForWrite()
-                self.task_queues['topics'].append(job)
-            finally:
-                self.locker.unlock()
+            self.bad_job(job)
             return
         t_id = job.split('.')[0].replace('thread-', '')
         # crawl all topics info
@@ -204,11 +202,7 @@ class SISTopicLoader(TheDownloader):
         try:
             page_tors = obj.find_all('a', {'href': re.compile(r'attachment')})
             if len(page_tors) == 0:
-                try:
-                    self.locker.lockForWrite()
-                    self.task_queues['topics'].append(job)
-                finally:
-                    self.locker.unlock()
+                self.bad_job(job)
                 return
             for each in page_tors:
                 self.task_queues['tors'].append((t_id, each['href']))
@@ -280,93 +274,22 @@ class SISTopicLoader(TheDownloader):
         else:
             return 2
 
-    # def download_content_from_topic(self, topics):
-    #     tar_page = self.baseurl + topics[0]
-    #     t_id = topics[0].split('.')[0]
-    #     t_type = topics[1]
-    #     t_name = topics[2]
-    #     t_mosaic = topics[3]
-    #     t_thumbup = topics[4]
-    #     t_date = topics[5]
-    #     t_size = topics[6]
-    #     try:
-    #         if 'G' in t_size:
-    #             t_size = float(re.match(r'(\d+\.?\d+)', t_size).group(1)) * 1000
-    #         else:
-    #             t_size = float(re.match(r'(\d+\.?\d+)', t_size).group(1))
-    #     except (AttributeError, ValueError):
-    #         t_size = 0
-    #     t_mtype = topics[7]
-    #     t_catey = topics[8]
-    #     self.emitInfo('Downloading {}'.format(t_name))
-    #     pagesoup = self.make_soup(tar_page)
-    #     # get movie information
-    #     try:
-    #         page_info = pagesoup.find('td', {'class': 'postcontent'})
-    #     except AttributeError:
-    #         self.emitInfo('{} failed.'.format(tar_page))
-    #         return
-    #
-    #     self.insertToQueriesPool(t_id, t_name, t_type, t_mosaic, t_thumbup, t_date, t_size, t_mtype, t_catey, page_info)
-    #
-    # def insertToQueriesPool(self, tid, tname, ttype, tmosaic, tthumbup, tdate, tsize, tmtype, tcatey, page_info):
-    #     try:
-    #         page_tors = page_info.find_all('a', {'href': re.compile(r'attachment')})
-    #     except AttributeError:
-    #         return
-    #     if page_tors is None:
-    #         return
-    #     # download torrents
-    #     for each_attach in page_tors:
-    #         tor = self.baseurl + each_attach['href']
-    #         tries = 5
-    #         while tries:
-    #             try:
-    #                 # print('Download {}'.format(each_attach.text))
-    #                 # torbyte = requests.get(tor, headers=self.get_headers(), timeout=10).content
-    #                 torbyte = self.request_with_proxy(tor).content
-    #                 magaddr = tor2mag.decodeTor(torbyte)
-    #                 try:
-    #                     self.locker.lockForWrite()
-    #                     self.thisqueries_pool['tor'].append((tid, magaddr))
-    #                 finally:
-    #                     self.locker.unlock()
-    #                 break
-    #             except requests.exceptions.RequestException:
-    #                 print('Torrent "{}" download failed, try again.'.format(tor))
-    #                 tries -= 1
-    #                 time.sleep(1)
-    #                 continue
-    #             except flatbencode.DecodingError:
-    #                 self.thisqueries_pool['tor'].append((tid, tor))
-    #                 print('{} decode failed.'.format(tor))
-    #                 break
-    #     try:
-    #         tbrief = page_info.find('div', {'class': 't_msgfont'}).text
-    #     except AttributeError:
-    #         tbrief = '没有'
-    #     if tmosaic == 2:
-    #         if '无码' in tname or '无码' in tbrief or '無碼' in tbrief or '無碼' in tname:
-    #             tmosaic = 0
-    #         elif '有码' in tname or '有码' in tbrief or '有碼' in tname or '有碼' in tbrief:
-    #             tmosaic = 1
-    #     try:
-    #         self.locker.lockForWrite()
-    #         self.thisqueries_pool['main']\
-    #             .append((tid, ttype, tname, tmosaic, tthumbup, tdate, tsize, tmtype, tbrief, tcatey))
-    #     finally:
-    #         self.locker.unlock()
-    #
-    #     for each_pic in page_info.find_all('img', {'src': re.compile(r'jpg|png')}):
-    #         pic_url = each_pic['src']
-    #         try:
-    #             self.locker.lockForWrite()
-    #             self.thisqueries_pool['pic'].append((tid, pic_url))
-    #         finally:
-    #             self.locker.unlock()
-
+    def bad_job(self, job):
+        try:
+            self.locker.lockForWrite()
+            if job in self.bad_tops_recorder.keys():
+                if self.bad_tops_recorder[job] < 5:
+                    self.bad_tops_recorder[job] += 1
+                    self.task_queues['topics'].append(job)
+            else:
+                self.bad_tops_recorder[job] = 1
+                self.task_queues['topics'].append(job)
+        finally:
+            self.locker.unlock()
 
 class SISTorLoader(TheDownloader):
+    bad_tors_recorder = {}
+
     def __init__(self, task_queues, sqlqueries_pool, tors_working_threads, proxies_pool, cookies=None, parent=None):
         super(SISTorLoader, self).__init__(proxies_pool, cookies, parent)
         self.task_queues = task_queues
@@ -390,22 +313,14 @@ class SISTorLoader(TheDownloader):
         req = self.request_with_proxy(url)
         if req is None or req.ok is False:
             print('{} downloading failed, back to queue.'.format(url))
-            try:
-                self.locker.lockForWrite()
-                self.task_queues['tors'].append(job)
-            finally:
-                self.locker.unlock()
+            self.bad_job(job)
             return
         try:
             magnet = self.magDecoder(req.content)
             self.thisqueries_pool['tor'].append((job[0], magnet))
             self.emitInfo('{} magnet success.'.format(job[0]))
         except flatbencode.DecodingError:
-            try:
-                self.locker.lockForWrite()
-                self.task_queues['tors'].append(job)
-            finally:
-                self.locker.unlock()
+            self.bad_job(job)
             return
 
     def magDecoder(self, byte):
@@ -414,6 +329,18 @@ class SISTorLoader(TheDownloader):
         magneturl = 'magnet:?xt=urn:btih:{}'.format(digest)
         return magneturl
 
+    def bad_job(self, job):
+        try:
+            self.locker.lockForWrite()
+            if job[0] in self.bad_tors_recorder.keys():
+                if self.bad_tors_recorder[job[0]] < 5:
+                    self.bad_tors_recorder[job[0]] += 1
+                    self.task_queues['tors'].append(job)
+            else:
+                self.bad_tors_recorder[job[0]] = 1
+                self.task_queues['tors'].append(job)
+        finally:
+            self.locker.unlock()
 
 class SISPicLoader(SISThread):
     # picpak_broadcast = pyqtSignal(tuple)
@@ -450,6 +377,9 @@ class SISPicLoader(SISThread):
 
     def isImage(self, byte):
         hexstr = u""
+        if len(byte) < 10:
+            print('Bad Image')
+            return False
         for i in range(10):
             t = u"%x" % byte[i]
             if len(t) % 2:
@@ -472,8 +402,8 @@ class SISSql(SISThread):
         self.task_queues = task_queues
 
     def run(self):
+        connect = sqlite3.connect('SISDB.sqlite')
         while True:
-            connect = sqlite3.connect('SISDB.sqlite')
             query = connect.cursor().execute
             try:
                 if len(self.queries['pic']):
@@ -484,6 +414,7 @@ class SISSql(SISThread):
                             query('INSERT INTO PicLink (tid) VALUES(?)', (picinfo[0],))
                         except sqlite3.IntegrityError:
                             pass
+                        connect.commit()
                     except sqlite3.IntegrityError as err:
                         print('Pics inserting err, code: ', err)
                         pass
@@ -491,6 +422,7 @@ class SISSql(SISThread):
                     try:
                         torinfo = self.queries['tor'].pop(0)
                         query('INSERT INTO SISmags VALUES(?, ?)', (torinfo[0], torinfo[1]))
+                        connect.commit()
                     except sqlite3.IntegrityError as err:
                         print('Tors inserting err, code', err)
                 if len(self.queries['top']):
@@ -499,11 +431,10 @@ class SISSql(SISThread):
                         query('INSERT INTO SIStops VALUES(?, ?, ?, ?, ?, ?, ?)',
                               (maininfo[0], maininfo[1], maininfo[2], maininfo[3],
                                maininfo[4], maininfo[5], maininfo[6]))
+                        connect.commit()
                     except sqlite3.IntegrityError as err:
                         print('Tops inserting err, code', err)
                         pass
             except sqlite3.OperationalError:
                 time.sleep(3)
-            finally:
-                connect.commit()
-                connect.close()
+        connect.close()
