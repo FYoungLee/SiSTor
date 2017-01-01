@@ -27,6 +27,8 @@
         * `SisPicWin` : The child widget in BrowserWidget, also modified some event functions.
             * `PicList` : child widget of sisPicWin
 
+#####[SISDisplay.py](SISDisplay.py)
+* `SISQuieis` : This thread handle all searching requests from databases, and feedback to BrowserWidget.
 
 
 
