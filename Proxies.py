@@ -55,3 +55,23 @@ class ProxiesThread(QThread):
                             self.proxies_pool.append(proxy)
                     except requests.exceptions.RequestException:
                         continue
+        elif self.which == 3:
+            url = 'http://www.kuaidaili.com/free/outha/{}/'
+            for page in range(1, 1415):
+                try:
+                    req = requests.get(url.format(page), headers={'User-Agent': self.headers})
+                except requests.exceptions.RequestException:
+                    time.sleep(5)
+                    continue
+                pobj = bsoup(req.content, 'lxml').findAll('tr')
+                for each in pobj[1:]:
+                    sp = each.findAll('td')
+                    proxy = sp[0].text + ':' + sp[1].text
+                    try:
+                        if requests.head(self.test_url, proxies={'http': proxy},
+                                         headers={'User-Agent': self.headers}, timeout=3).ok:
+                            # print('[{}]({}){} is good'.format(datetime.datetime.now().strftime('%H:%M:%S'), self.which,
+                            #                                   proxy))
+                            self.proxies_pool.append(proxy)
+                    except requests.exceptions.RequestException:
+                        continue

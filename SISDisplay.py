@@ -1,13 +1,15 @@
 from PyQt5.QtCore import QThread, pyqtSignal
-from datetime import datetime
-import sqlite3
+import sqlite3, time
 
 class SISQuieis(QThread):
     result_feadback = pyqtSignal(list)
+    pic_feadback = pyqtSignal(list)
 
-    def __init__(self, query, parent):
+    def __init__(self, query, flag, parent):
         super().__init__(parent)
         self.query = query
+        self.finished.connect(self.deleteLater)
+        self.flag = flag
 
     def run(self):
         # dateList = [datetime(2100, 1, 1).timestamp()]
@@ -22,9 +24,21 @@ class SISQuieis(QThread):
         #     queries.append(self.query + ' {} date<={} AND date>{}'.format(kw, dateList[each - 1], dateList[each]))
         con = sqlite3.connect('SISDB.sqlite')
         try:
-            result = con.cursor().execute(self.query).fetchall()
-            if result:
-                self.result_feadback.emit(result)
+            for each in self.query:
+                while True:
+                    try:
+                        result = con.cursor().execute(each).fetchall()
+                        print('{} operate done.'.format(each))
+                        break
+                    except sqlite3.OperationalError:
+                        print('Databases busy now, please wait.')
+                        time.sleep(3)
+                if result and self.flag:
+                    if self.flag == 1:
+                        self.result_feadback.emit(result)
+                    elif self.flag == 2:
+                        self.pic_feadback.emit(result)
+                con.commit()
         finally:
             con.close()
         # for each in queries:

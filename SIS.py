@@ -77,7 +77,9 @@ class TheDownloader(SISThread):
                 return None
             try:
                 if requests.head(url, headers=self.get_headers(), cookies=self.cookies, proxies=proxy, timeout=5).ok:
-                    return requests.get(url, headers=self.get_headers(), cookies=self.cookies, proxies=proxy, timeout=15)
+                    req = requests.get(url, headers=self.get_headers(), cookies=self.cookies, proxies=proxy, timeout=15)
+                    self.bad_proxies_record[proxy['http']] = 0
+                    return req
                 else:
                     raise requests.exceptions.RequestException
             except requests.exceptions.RequestException:
@@ -90,7 +92,7 @@ class TheDownloader(SISThread):
                     self.bad_proxies_record[proxy['http']] += 1
                 else:
                     self.bad_proxies_record[proxy['http']] = 1
-                if self.bad_proxies_record[proxy['http']] > 10 and proxy['http'] is not None:
+                if self.bad_proxies_record[proxy['http']] > 100 and proxy['http'] is not None:
                     try:
                         self.proxies_pool.pop(self.proxies_pool.index(proxy['http']))
                         # print('{} popped.'.format(proxy['http']))
@@ -113,9 +115,9 @@ class SISPageLoader(TheDownloader):
         self.task_queues = task_queues
         self.topics_working_threads = topics_working_threads
 
-    def __del__(self):
-        print('[{}]Page thread end.'.format(datetime.datetime.now().strftime('%H:%M:%S')))
+    def deleteLater(self):
         self.topics_working_threads[0] -= 1
+        super().deleteLater()
 
     def run(self):
         # extract all downloaded topics from databases.
@@ -131,8 +133,7 @@ class SISPageLoader(TheDownloader):
                     tid = each.split('.')[0].replace('thread-', '')
                     rst = connectDB.cursor().execute('SELECT tid FROM SIStops WHERE tid=?', (tid,)).fetchone()
                     if rst is None:
-                        continue
-                    unfinished_tops.append(each)
+                        unfinished_tops.append(each)
                 try:
                     self.locker.lockForWrite()
                     self.task_queues['topics'].extend(unfinished_tops)
@@ -174,9 +175,9 @@ class SISTopicLoader(TheDownloader):
         self.thisqueries_pool = sqlqueries_pool
         self.topics_working_threads = topics_working_threads
 
-    def __del__(self):
-        print('[{}]Topic thread end.'.format(datetime.datetime.now().strftime('%H:%M:%S')))
+    def deleteLater(self):
         self.topics_working_threads[0] -= 1
+        super().deleteLater()
 
     def run(self):
         while self.running:
@@ -186,22 +187,29 @@ class SISTopicLoader(TheDownloader):
                 return
             self.download_topics(job)
 
-    def download_topics(self, url_short):
-        url = self.baseurl + url_short
+    def download_topics(self, job):
+        url = self.baseurl + job
         obj = self.make_soup(url)
         if obj is None:
-            print('{} Loading failed, put job back to queue.'.format(url_short))
+            print('{} Loading failed, put job back to queue.'.format(url))
             try:
                 self.locker.lockForWrite()
-                self.task_queues['topics'].append(url_short)
+                self.task_queues['topics'].append(job)
             finally:
                 self.locker.unlock()
             return
-        t_id = url_short.split('.')[0].replace('thread-', '')
+        t_id = job.split('.')[0].replace('thread-', '')
         # crawl all topics info
         t_type, t_name, t_censor, t_thumbup, t_date, t_category = 'Unkown', 'Unkown', 2, 0, 57600.0, 0
         try:
             page_tors = obj.find_all('a', {'href': re.compile(r'attachment')})
+            if len(page_tors) == 0:
+                try:
+                    self.locker.lockForWrite()
+                    self.task_queues['topics'].append(job)
+                finally:
+                    self.locker.unlock()
+                return
             for each in page_tors:
                 self.task_queues['tors'].append((t_id, each['href']))
         except AttributeError as err:
@@ -225,6 +233,8 @@ class SISTopicLoader(TheDownloader):
             print('{} extract thumbup err, {} : Line {}'.format(url, err, sys.exc_info()[2].tb_frame.f_lineno))
         try:
             t_date = re.search(r'(\d+-\d+-\d+)', obj.find('div', {'class': 'postinfo'}).text).group(1)
+            int_date = t_date.split('-')
+            t_date = datetime.datetime(int(int_date[0]), int(int_date[1]), int(int_date[2])).timestamp()
         except AttributeError as err:
             print('{} extract date err, {} : Line {}'.format(url, err, sys.exc_info()[2].tb_frame.f_lineno))
         try:
@@ -242,7 +252,7 @@ class SISTopicLoader(TheDownloader):
                 self.locker.unlock()
             # push tors into queue
         except AttributeError as err:
-            print('extract category err, {} : Line {}'.format(err, sys.exc_info()[2].tb_frame.f_lineno))
+            print('{} extract category err, {} : Line {}'.format(url, err, sys.exc_info()[2].tb_frame.f_lineno))
 
         # push pics into queue
         try:
@@ -254,7 +264,7 @@ class SISTopicLoader(TheDownloader):
                 finally:
                     self.locker.unlock()
         except AttributeError as err:
-            print('extract pictures err, {} : Line {}'.format(err, sys.exc_info()[2].tb_frame.f_lineno))
+            print('{} extract pictures err, {} : Line {}'.format(url, err, sys.exc_info()[2].tb_frame.f_lineno))
         self.emitInfo('({}) {} Downloaded.'.format(t_id, t_name))
 
     def isMosic(self, obj):
@@ -363,9 +373,9 @@ class SISTorLoader(TheDownloader):
         self.thisqueries_pool = sqlqueries_pool
         self.tors_working_threads = tors_working_threads
 
-    def __del__(self):
-        print('[{}]Torrent thread end.'.format(datetime.datetime.now().strftime('%H:%M:%S')))
-        self.topics_working_threads[0] -= 1
+    def deleteLater(self):
+        self.tors_working_threads[0] -= 1
+        super().deleteLater()
 
     def run(self):
         while self.running:
@@ -391,15 +401,6 @@ class SISTorLoader(TheDownloader):
             self.thisqueries_pool['tor'].append((job[0], magnet))
             self.emitInfo('{} magnet success.'.format(job[0]))
         except flatbencode.DecodingError:
-            # slash = '/'
-            # if 'nt' in os.name:
-            #     slash = '\\'
-            # print('{} decoding failed, back to queue.'.format(url))
-            # if 'failedTors' not in os.listdir():
-            #     os.mkdir('{}{}failedTors'.format(os.getcwd(), slash))
-            # file = '{}{}failedTors{}.torrent'.format(os.getcwd(), slash, slash, job[0])
-            # with open(file, 'wb') as f:
-            #     f.write(req.content)
             try:
                 self.locker.lockForWrite()
                 self.task_queues['tors'].append(job)
@@ -422,8 +423,9 @@ class SISPicLoader(SISThread):
         self.pictures_working_threads = pictures_working_threads
         self.sqlqueries_pool = sqlqueries_pool
 
-    def __del__(self):
+    def deleteLater(self):
         self.pictures_working_threads[0] -= 1
+        super().deleteLater()
 
     def run(self):
         while self.running:
@@ -483,7 +485,7 @@ class SISSql(SISThread):
                         except sqlite3.IntegrityError:
                             pass
                     except sqlite3.IntegrityError as err:
-                        # print('Pics inserting err, code: ', err)
+                        print('Pics inserting err, code: ', err)
                         pass
                 if len(self.queries['tor']):
                     try:
@@ -499,6 +501,9 @@ class SISSql(SISThread):
                                maininfo[4], maininfo[5], maininfo[6]))
                     except sqlite3.IntegrityError as err:
                         print('Tops inserting err, code', err)
+                        pass
+            except sqlite3.OperationalError:
+                time.sleep(3)
             finally:
                 connect.commit()
                 connect.close()

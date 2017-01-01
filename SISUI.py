@@ -68,14 +68,6 @@ class SISMainWindow(QWidget):
                 )
                 """
             )
-            # connect.cursor().execute(
-            #     """
-            #     create table Picb(
-            #     tid text not null,
-            #     byte bolb not null
-            #     )
-            #     """
-            # )
             connect.commit()
             connect.close()
 
@@ -111,7 +103,7 @@ class DownloaderWidget(QWidget):
         self.cookies = None
         self.initUI()
         # set proxies updater threads.
-        for which in range(1, 3):
+        for which in range(1, 4):
             proxiesoperator = Proxies.ProxiesThread(self.proxies_pool, which, self)
             proxiesoperator.start()
         # set sql operator
@@ -120,7 +112,7 @@ class DownloaderWidget(QWidget):
         self.pages_generator = None
         self.topics_working_threads = [0]
         self.pictures_working_threads = [0]
-        self.startTimer(1000)
+        self.startTimer(3000)
 
     def __del__(self):
         with open('TaskQueue.json', 'w') as f:
@@ -186,10 +178,13 @@ class DownloaderWidget(QWidget):
 
         self.pages_box = QHBoxLayout()
         self.pages_label = QLabel("How many pages to download (下载页数，每页有30-40个种子)")
+        self.pages_line_start = QLineEdit('1')
+        self.pages_line_start.setFixedWidth(40)
         self.pages_line = QLineEdit()
-        self.pages_line.setText('1')
-        self.pages_line.setFixedWidth(30)
+        self.pages_line.setText('9999')
+        self.pages_line.setFixedWidth(40)
         self.pages_box.addWidget(self.pages_label)
+        self.pages_box.addWidget(self.pages_line_start)
         self.pages_box.addWidget(self.pages_line)
         self.pages_box.addStretch(1)
 
@@ -239,7 +234,7 @@ class DownloaderWidget(QWidget):
         topics_threads_layout = QHBoxLayout()
         topics_threads_layout.addWidget(QLabel('TpThreads'))
         self.tops_threads_silder = QSlider(Qt.Horizontal)
-        self.tops_threads_silder.setRange(0, 30)
+        self.tops_threads_silder.setRange(0, 50)
         self.tops_threads_silder.setValue(15)
         topics_threads_layout.addWidget(self.tops_threads_silder)
         topics_t_label = QLabel(str(self.tops_threads_silder.value()))
@@ -251,7 +246,7 @@ class DownloaderWidget(QWidget):
         tors_threads_layout = QHBoxLayout()
         tors_threads_layout.addWidget(QLabel('TrThreads'))
         self.tors_threads_silder = QSlider(Qt.Horizontal)
-        self.tors_threads_silder.setRange(0, 30)
+        self.tors_threads_silder.setRange(0, 50)
         self.tors_threads_silder.setValue(15)
         tors_threads_layout.addWidget(self.tors_threads_silder)
         tors_t_label = QLabel(str(self.tors_threads_silder.value()))
@@ -366,11 +361,8 @@ class DownloaderWidget(QWidget):
                                             len(self.proxies_pool)))
         if 'Download' not in self.start_btn.text():
             return
-        if len(self.task_queues['pics']) > self.pictures_working_threads[0] \
-                and self.pictures_working_threads[0] < self.pics_threads_silder.value():
+        if len(self.task_queues['pics']) > 1 and self.pictures_working_threads[0] < self.pics_threads_silder.value():
             th = SIS.SISPicLoader(self.task_queues, self.sqlqueries_pool, self.pictures_working_threads, self)
-            # th.picpak_broadcast.connect(self.sqloperator.picUpdate)
-            # self.stop_thread_signal.connect(th.setRunning)
             th.start()
             self.pictures_working_threads[0] += 1
 
@@ -394,13 +386,16 @@ class DownloaderWidget(QWidget):
         if len(self.task_queues['topics']) == 0 and self.topics_working_threads[0] < self.pages_threads_slider.value():
             if self.pages_generator is None:
                 self.pages_generator = (self.url_line.text() + self.sub_forum_addr() + '{}.html'.format(each)
-                             for each in range(1, int(self.pages_line.text()) + 1))
+                             for each in range(int(self.pages_line_start.text()), int(self.pages_line.text()) + 1))
             td = SIS.SISPageLoader(self.pages_generator, self.task_queues, self.topics_working_threads,
                                    self.proxies_pool, self.cookies, self)
             td.send_text.connect(self.infoRec)
             self.stop_thread_signal.connect(td.setRunning)
             td.start()
             self.topics_working_threads[0] += 1
+
+        with open('TaskQueue.json', 'w') as f:
+            f.write(json.dumps(self.task_queues))
 
     def infoRec(self, info):
         self.output_window.append(info)
@@ -482,6 +477,7 @@ class BrowserWidget(QWidget):
         #################################################
 
     def setTypeCombox(self, typs):
+        self.b_type_combox.clear()
         self.b_type_combox.addItem('所有')
         self.b_type_combox.addItems(typs)
 
@@ -509,13 +505,7 @@ class BrowserWidget(QWidget):
                 query += ' AND censor={}'.format(self.b_type_combox.currentIndex() - 1)
             else:
                 query += ' WHERE censor={}'.format(self.b_type_combox.currentIndex() - 1)
-        # connect = sqlite3.connect('SISDB.sqlite')
-        # result = connect.cursor().execute(query).fetchall()
-        # connect.close()
-        # self.placeItem(result)
-        # self.b_table_view.clear()
-        # self.b_table_view.setRowCount(0)
-        qw = SISDisplay.SISQuieis(query, self)
+        qw = SISDisplay.SISQuieis((query,), 1, self)
         qw.result_feadback.connect(self.searchResult)
         qw.start()
 
@@ -554,9 +544,12 @@ class BrowserWidget(QWidget):
                     else:
                         tableitem.setData(Qt.DisplayRole, '未知')
                 elif _n == 4:
-                    tableitem.setData(Qt.DisplayRole, datetime.fromtimestamp(float(item)).strftime('%Y-%m-%d'))
+                    try:
+                        tableitem.setData(Qt.DisplayRole, datetime.fromtimestamp(float(item)).strftime('%Y-%m-%d'))
+                    except ValueError:
+                        pass
                 elif _n == 5:
-                    cate = {1:'亚洲', 2:'欧美', 3:'动漫'}
+                    cate = {1:'亚洲', 2:'欧美', 3:'动漫', 0:'未知'}
                     tableitem.setData(Qt.DisplayRole, cate[item])
                 else:
                     tableitem.setData(Qt.DisplayRole, item)
@@ -602,28 +595,28 @@ class BrowserWidget(QWidget):
             self.magLine.setText(magtext)
         elif item.column() == 7 and item.data(1000) is not None:
             tid = item.data(1000)[0]
-            connect = sqlite3.connect('SISDB.sqlite')
-            picbs = connect.cursor().execute('SELECT tid, picb from PicByte WHERE tid=?', (tid,)).fetchall()
-            connect.close()
-            if len(picbs) == 0:
-                self.b_table_view.clearPicFromTable(item)
-                return
-            sw = SisPicWin(picbs, self)
-            sw.show()
+            queries = ('SELECT tid, picb from PicByte WHERE tid="{}"'.format(tid),)
+            qth = SISDisplay.SISQuieis(queries, 2, self)
+            qth.pic_feadback.connect(self.pic_display)
+            qth.start()
         elif item.column() == 8:
             QDesktopServices().openUrl(QUrl(item.toolTip()))
         elif item.column() == 9:
             reply = QMessageBox().question(self, '删除确认', '移除\n{}'.format(item.toolTip()), QMessageBox.Ok|QMessageBox.Cancel)
             if reply == QMessageBox.Ok:
                 tid = item.data(1000)
-                conn = sqlite3.connect('SIS.sqlite')
-                conn.cursor().execute('DELETE from SIS WHERE tid=?', (tid,))
-                conn.cursor().execute('DELETE from SISmags WHERE tid=?', (tid,))
-                conn.cursor().execute('DELETE from PicLink WHERE tid=?', (tid,))
-                conn.cursor().execute('DELETE from PicByte WHERE tid=?', (tid,))
-                conn.commit()
-                conn.close()
+                queries = []
+                for each in ('SIStops', 'SISmags', 'PicLink', 'PicByte'):
+                    queries.append('DELETE FROM {} WHERE tid="{}"'.format(each, tid))
+                qth = SISDisplay.SISQuieis(queries, 0, self)
+                qth.start()
                 self.b_table_view.removeRow(item.row())
+
+    def pic_display(self, pics):
+        if len(pics) == 0:
+            return
+        sw = SisPicWin(pics, self)
+        sw.show()
 
     def prevClicked(self):
         self.currentIndex -= 1
