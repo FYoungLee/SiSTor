@@ -1,4 +1,4 @@
-import SIS, SISDisplay, Proxies
+import SIS, SISDisplay
 import os, requests, sqlite3, json, random
 from datetime import datetime
 from PyQt5.QtWidgets import QWidget, QPushButton, QHBoxLayout, QVBoxLayout, QLabel, QComboBox, QLineEdit, \
@@ -87,36 +87,17 @@ class DownloaderWidget(QWidget):
     def __init__(self, parent=None):
         super(DownloaderWidget, self).__init__(parent)
         # this list store all topics that download from topic_downloader thread.
-        self.task_queues = {'topics': [], 'tors': [], 'pics': []}
-        try:
-            with open('TaskQueue.json') as f:
-                content = json.loads(f.read())
-                self.task_queues['topics'].extend(content['topics'])
-                self.task_queues['tors'].extend(content['tors'])
-                self.task_queues['pics'].extend(content['pics'])
-        except FileNotFoundError:
-            pass
-        except json.decoder.JSONDecodeError as err:
-            print('Queue loading error, code:', err)
-        self.proxies_pool = [None]
-        self.sqlqueries_pool = {'top': [], 'tor': [], 'pic': []}
         self.cookies = None
         self.initUI()
         # set proxies updater threads.
         for which in range(1, 4):
-            proxiesoperator = Proxies.ProxiesThread(self.proxies_pool, which, self)
+            proxiesoperator = SIS.ProxiesThread(which, self)
             proxiesoperator.start()
         # set sql operator
-        self.sqloperator = SIS.SISSql(self.sqlqueries_pool, self.task_queues, self)
+        self.sqloperator = SIS.SISSql(self)
         self.sqloperator.start()
         self.pages_generator = None
-        self.topics_working_threads = [0]
-        self.pictures_working_threads = [0]
         self.startTimer(3000)
-
-    def __del__(self):
-        with open('TaskQueue.json', 'w') as f:
-            f.write(json.dumps(self.task_queues))
 
     def initUI(self):
         #################################################
@@ -290,7 +271,7 @@ class DownloaderWidget(QWidget):
 
     def check_url(self):
         if len(self.proxies_pool):
-            proxy = random.choice(self.proxies_pool)
+            proxy = random.choice(SIS.SIS_POOLS['proxies'])
         else:
             return
         try:
@@ -351,51 +332,45 @@ class DownloaderWidget(QWidget):
         self.stop_thread_signal.emit(False)
 
     def timerEvent(self, QTimerEvent):
-        self.progress_label.setText('Topics Remain: {}   Tors Remain: {}   Pics Remain: {}'
-                                    '   Forum Threads: {}   Picture Threads: {}   Proxies: {}'
-                                    .format(len(self.task_queues['topics']),
-                                            len(self.task_queues['tors']),
-                                            len(self.task_queues['pics']),
-                                            self.topics_working_threads[0],
-                                            self.pictures_working_threads[0],
-                                            len(self.proxies_pool)))
+        self.progress_label.setText('Tops: {}   Tors: {}   Pics: {}   Page-Th: {}   '
+                                    'Topic-Th: {}   Tor-Th: {}   Pic-Th: {}   Proxies: {}'
+                                    .format(len(SIS.SIS_POOLS['tops queue']),
+                                            len(SIS.SIS_POOLS['tors queue']),
+                                            len(SIS.SIS_POOLS['pics queue']),
+                                            SIS.Working_threads['page'],
+                                            SIS.Working_threads['top'],
+                                            SIS.Working_threads['tor'],
+                                            SIS.Working_threads['pic'],
+                                            len(SIS.SIS_POOLS['proxies'])))
         if 'Download' not in self.start_btn.text():
             return
-        if len(self.task_queues['pics']) > 1 and self.pictures_working_threads[0] < self.pics_threads_silder.value():
-            th = SIS.SISPicLoader(self.task_queues, self.sqlqueries_pool, self.pictures_working_threads, self)
+        if len(SIS.SIS_POOLS['pics queue']) > 0 and SIS.Working_threads['pic'] < self.pics_threads_silder.value():
+            th = SIS.SISPicLoader(self)
             th.start()
-            self.pictures_working_threads[0] += 1
 
-        if len(self.task_queues['tors']) > 0 and self.topics_working_threads[0] < self.tors_threads_silder.value():
-            tth = SIS.SISTorLoader(self.task_queues, self.sqlqueries_pool, self.topics_working_threads,
-                                    self.proxies_pool, self.cookies, self)
+        if len(SIS.SIS_POOLS['tors queue']) > 0 and SIS.Working_threads['tor'] < self.tors_threads_silder.value():
+            tth = SIS.SISTorLoader(self.cookies, self)
             tth.send_text.connect(self.infoRec)
             self.stop_thread_signal.connect(tth.setRunning)
             tth.start()
-            self.topics_working_threads[0] += 1
 
-        if len(self.task_queues['topics']) > self.topics_working_threads[0] \
-                and self.topics_working_threads[0] < self.tops_threads_silder.value():
-            th = SIS.SISTopicLoader(self.task_queues, self.sqlqueries_pool, self.topics_working_threads,
-                                    self.proxies_pool, self.cookies, self)
+        if len(SIS.SIS_POOLS['tops queue']) > 0 and SIS.Working_threads['top'] < self.tops_threads_silder.value():
+            th = SIS.SISTopicLoader(self.cookies, self)
             th.send_text.connect(self.infoRec)
             self.stop_thread_signal.connect(th.setRunning)
             th.start()
-            self.topics_working_threads[0] += 1
 
-        if len(self.task_queues['topics']) == 0 and self.topics_working_threads[0] < self.pages_threads_slider.value():
+        if len(SIS.SIS_POOLS['tops queue']) == 0 and SIS.Working_threads['page'] < self.pages_threads_slider.value():
             if self.pages_generator is None:
                 self.pages_generator = (self.url_line.text() + self.sub_forum_addr() + '{}.html'.format(each)
                              for each in range(int(self.pages_line_start.text()), int(self.pages_line.text()) + 1))
-            td = SIS.SISPageLoader(self.pages_generator, self.task_queues, self.topics_working_threads,
-                                   self.proxies_pool, self.cookies, self)
+            td = SIS.SISPageLoader(self.pages_generator, self.cookies, self)
             td.send_text.connect(self.infoRec)
             self.stop_thread_signal.connect(td.setRunning)
             td.start()
-            self.topics_working_threads[0] += 1
 
-        with open('TaskQueue.json', 'w') as f:
-            f.write(json.dumps(self.task_queues))
+        with open('Jobs.json', 'w') as f:
+            f.write(json.dumps(SIS.SIS_POOLS))
 
     def infoRec(self, info):
         self.output_window.append(info)

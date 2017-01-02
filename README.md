@@ -15,9 +15,7 @@
         * `SISTorLoader` : Download torrents and decode to magnet string, send result to sql queries thread.
         * `SISPicLoader` : Download pictures and send the correct image to sql queries thread.
     * `SISSql` : Inherit from SISThread, it receives and implements all sql queries.
-
-#####[Proxies.py](Proxies.py)
-* `ProxiesThread` : The thread to crawl proxies from some proxies website.
+    * `ProxiesThread` : The thread to crawl proxies from some proxies website.
 
 #####[SISUI.py](SISUI.py)
 * `SISMainWindow`
