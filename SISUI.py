@@ -272,6 +272,7 @@ class DownloaderWidget(QWidget):
         self.output_box = QVBoxLayout()
         self.output_window = QTextBrowser()
         self.output_window.setMinimumWidth(640)
+        self.output_window.document().setMaximumBlockCount(1000)
         self.progress_label = QLabel()
         self.progress_box = QHBoxLayout()
         self.progress_box.addWidget(self.progress_label)
@@ -379,7 +380,7 @@ class DownloaderWidget(QWidget):
             self.stop_thread_signal.connect(tth.setRunning)
             tth.start()
 
-        if len(SIS.SIS_POOLS['tops queue']) > 0 and SIS.Working_threads['top'] < self.tops_threads_silder.value() and (len(SIS.SIS_POOLS['pics queue']) + len(SIS.SIS_POOLS['tors queue']))< 10000:
+        if len(SIS.SIS_POOLS['tops queue']) > 0 and SIS.Working_threads['top'] < self.tops_threads_silder.value() and (len(SIS.SIS_POOLS['pics queue']) + len(SIS.SIS_POOLS['tors queue'])) < 10000:
             th = SIS.SISTopicLoader(self.cookies, self)
             th.send_text.connect(self.infoRec)
             self.stop_thread_signal.connect(th.setRunning)
@@ -611,13 +612,7 @@ class BrowserWidget(QWidget):
                 for each in picpath:
                     connect.cursor().execute('DELETE FROM PicMD5 WHERE path=?', (each[1],))
                     connect.cursor().execute('DELETE FROM PicPath WHERE path=?', (each[1],))
-                    os.remove(each[1])
-                    slash = '/'
-                    if os.name == 'nt':
-                        slash = '\\'
-                    dirpath = each[1][:each[1].rfind(slash)]
-                    if len(os.listdir(dirpath)) == 0:
-                        os.removedirs(dirpath)
+                    del_localpic(each[1])
                 connect.commit()
                 self.b_table_view.removeRow(item.row())
                 connect.close()
@@ -671,13 +666,7 @@ class myTable(QTableWidget):
             for each in pics:
                 connect.cursor().execute('DELETE FROM PicPath WHERE path=?', (each[1]))
                 connect.cursor().execute('DELETE FROM PicMD5 WHERE path=?', (each[1],))
-                os.remove(each[1])
-                slash = '/'
-                if os.name == 'nt':
-                    slash = '\\'
-                dirpath = each[1][:each[1].rfind(slash)]
-                if len(os.listdir(dirpath)) == 0:
-                    os.removedirs(dirpath)
+                del_localpic(each[1])
             connect.commit()
         except sqlite3.IntegrityError as err:
             print(err)
@@ -743,13 +732,7 @@ class SisPicWin(QDialog):
             picpath = item.data(1002)
             connect.cursor().execute('DELETE FROM PicMD5 WHERE path=?', (picpath,))
             connect.cursor().execute('DELETE FROM PicPath WHERE path=?', (picpath,))
-            os.remove(picpath)
-            slash = '/'
-            if os.name == 'nt':
-                slash = '\\'
-            dirpath = picpath[:picpath.rfind(slash)]
-            if len(os.listdir(dirpath)) == 0:
-                os.removedirs(dirpath)
+            del_localpic(picpath)
             connect.commit()
         except sqlite3.IntegrityError as err:
             print(err)
@@ -773,3 +756,11 @@ class picList(QListWidget):
 def get_forum_address():
     with open('sis_addr.dat', 'r') as f:
         return f.readline()
+
+
+def del_localpic(picpath):
+    re_path = picpath.replace('\\', os.sep).replace('/', os.sep).replace(':', os.sep)
+    os.remove(re_path)
+    dirpath = re_path[:re_path.rfind(os.sep)]
+    if len(os.listdir(dirpath)) == 0:
+        os.removedirs(dirpath)

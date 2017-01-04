@@ -183,7 +183,7 @@ class SISTopicLoader(TheDownloader):
 
     def run(self):
         while self.running:
-            if len(SIS_POOLS['pics queue']) + len(SIS_POOLS['tors queue']) > 10000:
+            if len(SIS_POOLS['pics queue']) + len(SIS_POOLS['tors queue']) > 20000:
                 return
             try:
                 job = SIS_POOLS['tops queue'].pop(0)
@@ -418,7 +418,7 @@ class SISSql(SISThread):
                             continue
                         self.md5.update(picinfo[1])
                         imgmd5 = self.md5.hexdigest()
-                        path = 'img/{}/{}/{}/{}.{}'.format(add_info[0], add_info[1], add_info[2], imgmd5, picinfo[2])
+                        path = 'img{}{}{}{}{}{}{}{}.{}'.format(os.sep, add_info[0], os.sep, add_info[1], os.sep, add_info[2], os.sep, imgmd5, picinfo[2])
                         try:
                             query('insert into PicMD5 values(?, ?)', (path, imgmd5))
                             query('insert into PicPath values(?, ?)', (picinfo[0], path))
@@ -459,13 +459,10 @@ class SISSql(SISThread):
                 connect.close()
 
     def save_pic(self, path, byte):
-        slash = '/'
-        if os.name == 'nt':
-            slash = '\\'
-        path_list = path.split(slash)
+        path_list = path.split(os.sep)
         for index in range(1, len(path_list)):
             try:
-                os.mkdir(slash.join(path_list[:index]))
+                os.mkdir(os.sep.join(path_list[:index]))
             except FileExistsError:
                 continue
         with open(path, 'wb') as f:
