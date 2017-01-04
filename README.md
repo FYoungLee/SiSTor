@@ -9,13 +9,13 @@
 
 #####[SIS.py](SIS.py)
 * `SISThread` : Base object of all downloaders, it provides the locker and threads working control signal.
-    *  `TheDownloader` : Inherits from SISThread, provides pick random headers and proxies functions, also help make BeautifulSoup object
+    *  `TheDownloader` : Inherits from SISThread, provides pick random headers and proxies functions, this object has a dict that record how many times those bad proxies unavailable, abandon those has exceed the limit; it also help make BeautifulSoup object return to caller.
         * `SISPageLoader` : Download all topics from given pages generator, store the topic urls into topics download queue.
         * `SISTopicLoader` : Download and extract all information from each topic in queue; stores brief info to sql queries thread, stores torrents and images url to queue.
         * `SISTorLoader` : Download torrents and decode to magnet string, send result to sql queries thread.
         * `SISPicLoader` : Download pictures and send the correct image to sql queries thread.
-    * `SISSql` : Inherit from SISThread, it receives and implements all sql queries.
-    * `ProxiesThread` : The thread to crawl proxies from some proxies website.
+    * `SISSql` : Inherit from SISThread, it receives and implements all sql queries, save images to local direction.
+    * `ProxiesThread` : The thread to crawl proxies from some proxies website, it also check the proxies if it available for target website, ignore those unavailable.
 
 #####[SISUI.py](SISUI.py)
 * `SISMainWindow`

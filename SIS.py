@@ -9,6 +9,7 @@ import flatbencode
 import sys
 import hashlib
 import json
+import os
 from PyQt5.QtCore import QThread
 from PyQt5.QtCore import pyqtSignal
 from PyQt5.QtCore import QReadWriteLock
@@ -57,7 +58,6 @@ class TheDownloader(SISThread):
 
     def get_proxy(self):
         while len(SIS_POOLS['proxies']) == 0:
-            print('Out of proxies, please wait.')
             time.sleep(3)
         return {'http': random.choice(SIS_POOLS['proxies'])}
 
@@ -183,6 +183,8 @@ class SISTopicLoader(TheDownloader):
 
     def run(self):
         while self.running:
+            if len(SIS_POOLS['pics queue']) + len(SIS_POOLS['tors queue']) > 10000:
+                return
             try:
                 job = SIS_POOLS['tops queue'].pop(0)
             except IndexError:
@@ -361,20 +363,20 @@ class SISPicLoader(SISThread):
                 if requests.head(job[1], timeout=5).ok is False:
                     continue
                 bpic = requests.get(job[1], timeout=150).content
-                if self.isImage(bpic):
-                    try:
-                        self.locker.lockForWrite()
-                        SIS_Queries['pic'].append((job[0], bpic))
-                    finally:
-                        self.locker.unlock()
-                else:
+                pictype = self.isImage(bpic)
+                if 'none' in pictype:
                     print('{} is not an image.'.format(job[1]))
+                try:
+                    self.locker.lockForWrite()
+                    SIS_Queries['pic'].append((job[0], bpic, pictype))
+                finally:
+                    self.locker.unlock()
             except requests.exceptions.RequestException:
                 pass
 
     def isImage(self, byte):
         if len(byte) < 10:
-            return False
+            return 'none'
         hexstr = u""
         for i in range(10):
             t = u"%x" % byte[i]
@@ -382,11 +384,13 @@ class SISPicLoader(SISThread):
                 hexstr += u"0"
             hexstr += t
         img_header = hexstr.upper()
-        if 'FFD8FF' in img_header or '89504E47' in img_header:
-            return True
+        if 'FFD8FF' in img_header:
+            return 'jpg'
+        if '89504E47' in img_header:
+            return 'png'
         else:
             print('Image header: {} does not look like an image'.format(img_header))
-            return False
+            return 'none'
 
 
 class SISSql(SISThread):
@@ -395,6 +399,7 @@ class SISSql(SISThread):
     def __init__(self, parent=None):
         super(SISSql, self).__init__(parent)
         print('SISSql Created')
+        self.md5 = hashlib.md5()
 
     def run(self):
         while True:
@@ -408,11 +413,26 @@ class SISSql(SISThread):
                 while len(SIS_Queries['pic']):
                     try:
                         picinfo = SIS_Queries['pic'].pop(0)
-                        query('INSERT INTO PicByte VALUES(?, ?)', (picinfo[0], picinfo[1]))
+                        add_info = query('select category, type, date from SIStops where tid=?', (picinfo[0],)).fetchone()
+                        if add_info is None:
+                            continue
+                        self.md5.update(picinfo[1])
+                        imgmd5 = self.md5.hexdigest()
+                        path = 'img/{}/{}/{}/{}.{}'.format(add_info[0], add_info[1], add_info[2], imgmd5, picinfo[2])
                         try:
-                            query('INSERT INTO PicLink (tid) VALUES(?)', (picinfo[0],))
-                        except sqlite3.IntegrityError:
-                            pass
+                            query('insert into PicMD5 values(?, ?)', (path, imgmd5))
+                            query('insert into PicPath values(?, ?)', (picinfo[0], path))
+                        except sqlite3.IntegrityError as err:
+                            if 'UNIQUE' in str(err):
+                                exists_path = query('select path from PicMD5 where md5=?', (imgmd5,)).fetchone()
+                                query('insert into PicPath values(?, ?)', (picinfo[0], exists_path[0]))
+                                continue
+                        self.save_pic(path, picinfo[1])
+                        # query('INSERT INTO PicByte VALUES(?, ?)', (picinfo[0], picinfo[1]))
+                        # try:
+                        #     query('INSERT INTO PicLink (tid) VALUES(?)', (picinfo[0],))
+                        # except sqlite3.IntegrityError:
+                        #     pass
                         connect.commit()
                     except sqlite3.IntegrityError as err:
                         # print('Pics inserting err, code: ', err)
@@ -437,6 +457,19 @@ class SISSql(SISThread):
                 time.sleep(1)
             finally:
                 connect.close()
+
+    def save_pic(self, path, byte):
+        slash = '/'
+        if os.name == 'nt':
+            slash = '\\'
+        path_list = path.split(slash)
+        for index in range(1, len(path_list)):
+            try:
+                os.mkdir(slash.join(path_list[:index]))
+            except FileExistsError:
+                continue
+        with open(path, 'wb') as f:
+            f.write(byte)
 
 
 class ProxiesThread(TheDownloader):

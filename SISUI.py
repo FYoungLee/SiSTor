@@ -39,46 +39,67 @@ class SISMainWindow(QWidget):
     def check_databases(self):
         if 'SISDB.sqlite' not in os.listdir('.'):
             connect = sqlite3.connect('SIS.sqlite')
-            connect.cursor().execute(
-                """
-                create table SIStops(
-                tid text primary key not null,
-                type text not null,
-                name text not null,
-                censor integer,
-                thumbup integer,
-                date integer,
-                category integer)
-                """)
-            connect.cursor().execute(
-                """
-                create table SISmags(
-                tid text not null,
-                magnet text not null)""")
-            connect.cursor().execute(
-                """
-                create table PicByte(
-                tid text not null,
-                picb blob primary key not null)
-                """)
-            connect.cursor().execute(
-                """
-                create table PicLink(
-                tid text not null primary key,
-                )
-                """
-            )
-            connect.commit()
-            connect.close()
+            try:
+                connect.cursor().execute(
+                    """
+                    create table SIStops(
+                    tid text primary key not null,
+                    type text not null,
+                    name text not null,
+                    censor integer,
+                    thumbup integer,
+                    date integer,
+                    category integer)
+                    """)
+                connect.cursor().execute(
+                    """
+                    create table SISmags(
+                    tid text not null,
+                    magnet text not null)""")
+                # connect.cursor().execute(
+                #     """
+                #     create table PicByte(
+                #     tid text not null,
+                #     picb blob primary key not null)
+                #     """)
+                # connect.cursor().execute(
+                #     """
+                #     create table PicLink(
+                #     tid text not null primary key,
+                #     )
+                #     """)
+                connect.cursor().execute(
+                    '''
+                    create table PicPath(
+                    tid text not null,
+                    path text not null)
+                    ''')
+                connect.cursor().execute(
+                    '''
+                    create table PicMD5(
+                    path text not null,
+                    md5 text primary key not null)
+                    ''')
+                os.mkdir('img')
+            except:
+                pass
+            finally:
+                connect.commit()
+                connect.close()
 
     def whenTabClicked(self, n_tab):
-        if n_tab == 1:
+        if n_tab == 1 and 'Start' in self.downloaderWidget.start_btn.text():
             connect = sqlite3.connect('SISDB.sqlite')
+            self.browserWidget.b_start_load.setEnabled(True)
+            self.browserWidget.result_label.setText('')
             self.browserWidget.setTypeCombox(
                 [x[0] for x in connect.cursor().execute('select type from SIStops group by type').fetchall()])
             self.browserWidget.b_count_label\
                 .setText(' {} in stock'.format(connect.cursor().execute('select count(tid) from SIStops').fetchone()[0]))
             connect.close()
+        elif 'Download' in self.downloaderWidget.start_btn.text():
+            self.browserWidget.b_start_load.setEnabled(False)
+            self.browserWidget.result_label.setText('Disabled searching while downloading, 下载中搜索不可用.')
 
 
 class DownloaderWidget(QWidget):
@@ -326,6 +347,8 @@ class DownloaderWidget(QWidget):
                 QMessageBox().critical(self, 'Pages error', 'How many pages you want to download?\n请输入正确的下载页数')
                 return
             self.start_btn.setText('Downloading...')
+            self.pages_generator = (self.url_line.text() + self.sub_forum_addr() + '{}.html'.format(each)
+                         for each in range(int(self.pages_line_start.text()), int(self.pages_line.text()) + 1))
 
     def stop_btn_clicked(self):
         self.start_btn.setText('Start')
@@ -342,6 +365,8 @@ class DownloaderWidget(QWidget):
                                             SIS.Working_threads['tor'],
                                             SIS.Working_threads['pic'],
                                             len(SIS.SIS_POOLS['proxies'])))
+        with open('Jobs.json', 'w') as f:
+            f.write(json.dumps(SIS.SIS_POOLS))
         if 'Download' not in self.start_btn.text():
             return
         if len(SIS.SIS_POOLS['pics queue']) > 0 and SIS.Working_threads['pic'] < self.pics_threads_silder.value():
@@ -354,23 +379,17 @@ class DownloaderWidget(QWidget):
             self.stop_thread_signal.connect(tth.setRunning)
             tth.start()
 
-        if len(SIS.SIS_POOLS['tops queue']) > 0 and SIS.Working_threads['top'] < self.tops_threads_silder.value():
+        if len(SIS.SIS_POOLS['tops queue']) > 0 and SIS.Working_threads['top'] < self.tops_threads_silder.value() and (len(SIS.SIS_POOLS['pics queue']) + len(SIS.SIS_POOLS['tors queue']))< 10000:
             th = SIS.SISTopicLoader(self.cookies, self)
             th.send_text.connect(self.infoRec)
             self.stop_thread_signal.connect(th.setRunning)
             th.start()
 
         if len(SIS.SIS_POOLS['tops queue']) == 0 and SIS.Working_threads['page'] < self.pages_threads_slider.value():
-            if self.pages_generator is None:
-                self.pages_generator = (self.url_line.text() + self.sub_forum_addr() + '{}.html'.format(each)
-                             for each in range(int(self.pages_line_start.text()), int(self.pages_line.text()) + 1))
             td = SIS.SISPageLoader(self.pages_generator, self.cookies, self)
             td.send_text.connect(self.infoRec)
             self.stop_thread_signal.connect(td.setRunning)
             td.start()
-
-        with open('Jobs.json', 'w') as f:
-            f.write(json.dumps(SIS.SIS_POOLS))
 
     def infoRec(self, info):
         self.output_window.append(info)
@@ -414,7 +433,7 @@ class BrowserWidget(QWidget):
         self.next_page_btn.setEnabled(False)
         self.next_page_btn.clicked.connect(self.nextClicked)
         self.result_label = QLabel()
-        self.result_label.setFixedWidth(50)
+        self.result_label.setFixedWidth(200)
         self.b_topic_each_page_slider = QSlider(Qt.Horizontal)
         self.b_topic_each_page_slider.setRange(50, 5000)
         silderLabel = QLabel('50条/每页')
@@ -480,9 +499,11 @@ class BrowserWidget(QWidget):
                 query += ' AND censor={}'.format(self.b_type_combox.currentIndex() - 1)
             else:
                 query += ' WHERE censor={}'.format(self.b_type_combox.currentIndex() - 1)
-        qw = SISDisplay.SISQuieis((query,), 1, self)
-        qw.result_feadback.connect(self.searchResult)
-        qw.start()
+        connect = sqlite3.connect('SISDB.sqlite')
+        result = connect.cursor().execute(query).fetchall()
+        connect.close()
+        self.searchResult(result)
+
 
     def searchResult(self, result):
         if len(result):
@@ -525,14 +546,15 @@ class BrowserWidget(QWidget):
                         pass
                 elif _n == 5:
                     cate = {1:'亚洲', 2:'欧美', 3:'动漫', 0:'未知'}
-                    tableitem.setData(Qt.DisplayRole, cate[item])
+                    category = cate[item]
+                    tableitem.setText(category)
                 else:
                     tableitem.setData(Qt.DisplayRole, item)
                 self.b_table_view.setItem(row, _n, tableitem)
             connect = sqlite3.connect('SISDB.sqlite')
             tors = [x[0] for x in connect.cursor().execute('SELECT magnet from SISmags WHERE tid=?', (each[0],)).fetchall()]
-            pics = connect.cursor().execute('SELECT tid from PicLink WHERE tid=?', (each[0],)).fetchone()
-            connect.close()
+            pics = connect.cursor().execute('SELECT tid, path from PicPath WHERE tid=?', (each[0],)).fetchall()
+
 
             if tors:
                 tableitem = QTableWidgetItem('打开')
@@ -540,11 +562,12 @@ class BrowserWidget(QWidget):
                 tableitem.setData(1000, tors)
                 self.b_table_view.setItem(row, 6, tableitem)
 
-            if pics and pics[0]:
+            if len(pics):
                 tableitem = QTableWidgetItem('显示')
                 tableitem.setTextAlignment(Qt.AlignCenter)
                 tableitem.setData(1000, pics)
                 self.b_table_view.setItem(row, 7, tableitem)
+            connect.close()
 
             tableitem = QTableWidgetItem('...')
             tableitem.setTextAlignment(Qt.AlignCenter)
@@ -553,7 +576,10 @@ class BrowserWidget(QWidget):
 
             tableitem = QTableWidgetItem('删')
             tableitem.setToolTip(each[0])
+            # put id info in to item
             tableitem.setData(1000, each[0])
+            # put pic path info in to item
+            tableitem.setData(1001, pics)
             tableitem.setTextAlignment(Qt.AlignCenter)
             self.b_table_view.setItem(row, 9, tableitem)
 
@@ -569,29 +595,32 @@ class BrowserWidget(QWidget):
                 magtext += each + '\t'
             self.magLine.setText(magtext)
         elif item.column() == 7 and item.data(1000) is not None:
-            tid = item.data(1000)[0]
-            queries = ('SELECT tid, picb from PicByte WHERE tid="{}"'.format(tid),)
-            qth = SISDisplay.SISQuieis(queries, 2, self)
-            qth.pic_feadback.connect(self.pic_display)
-            qth.start()
+            pics = item.data(1000)
+            sw = SisPicWin(pics, self)
+            sw.show()
         elif item.column() == 8:
             QDesktopServices().openUrl(QUrl(item.toolTip()))
         elif item.column() == 9:
-            reply = QMessageBox().question(self, '删除确认', '移除\n{}'.format(item.toolTip()), QMessageBox.Ok|QMessageBox.Cancel)
+            reply = QMessageBox().question(self, '删除确认', '移除\n{}'.format(item.toolTip()), QMessageBox.Ok | QMessageBox.Cancel)
             if reply == QMessageBox.Ok:
                 tid = item.data(1000)
-                queries = []
-                for each in ('SIStops', 'SISmags', 'PicLink', 'PicByte'):
-                    queries.append('DELETE FROM {} WHERE tid="{}"'.format(each, tid))
-                qth = SISDisplay.SISQuieis(queries, 0, self)
-                qth.start()
+                picpath = item.data(1001)
+                connect = sqlite3.connect('SISDB.sqlite')
+                for each in ('SIStops', 'SISmags', 'PicPath'):
+                    connect.cursor().execute('DELETE FROM {} WHERE tid="{}"'.format(each, tid))
+                for each in picpath:
+                    connect.cursor().execute('DELETE FROM PicMD5 WHERE path=?', (each[1],))
+                    connect.cursor().execute('DELETE FROM PicPath WHERE path=?', (each[1],))
+                    os.remove(each[1])
+                    slash = '/'
+                    if os.name == 'nt':
+                        slash = '\\'
+                    dirpath = each[1][:each[1].rfind(slash)]
+                    if len(os.listdir(dirpath)) == 0:
+                        os.removedirs(dirpath)
+                connect.commit()
                 self.b_table_view.removeRow(item.row())
-
-    def pic_display(self, pics):
-        if len(pics) == 0:
-            return
-        sw = SisPicWin(pics, self)
-        sw.show()
+                connect.close()
 
     def prevClicked(self):
         self.currentIndex -= 1
@@ -631,28 +660,36 @@ class myTable(QTableWidget):
         super().mousePressEvent(*args, **kwargs)
 
     def clearPicFromTable(self, item):
-        tid = item.toolTip()
-        self.deletePicturesFromDB(tid)
+        pics = item.data(1000)
+        self.deletePicturesFromDB(pics)
         item.setData(1000, None)
         item.setText('')
 
-    def deletePicturesFromDB(self, tid):
-        con = sqlite3.connect('SISDB.sqlite')
+    def deletePicturesFromDB(self, pics):
+        connect = sqlite3.connect('SISDB.sqlite')
         try:
-            con.cursor().execute('DELETE FROM PicLink WHERE tid=?', (tid,))
-            con.cursor().execute('DELETE FROM PicByte WHERE tid=?', (tid,))
-            con.commit()
+            for each in pics:
+                connect.cursor().execute('DELETE FROM PicPath WHERE path=?', (each[1]))
+                connect.cursor().execute('DELETE FROM PicMD5 WHERE path=?', (each[1],))
+                os.remove(each[1])
+                slash = '/'
+                if os.name == 'nt':
+                    slash = '\\'
+                dirpath = each[1][:each[1].rfind(slash)]
+                if len(os.listdir(dirpath)) == 0:
+                    os.removedirs(dirpath)
+            connect.commit()
         except sqlite3.IntegrityError as err:
             print(err)
         finally:
-            con.close()
+            connect.close()
 
 
 class SisPicWin(QDialog):
-    def __init__(self, picbs, parent=None):
+    def __init__(self, pics, parent=None):
         super().__init__(parent)
         layout = QVBoxLayout()
-        self.picbs = picbs
+        self.pics = pics
         # self.selected = 0
         self.m_pListWidget = picList()
         self.m_pListWidget.setIconSize(QSize(100, 100))
@@ -675,9 +712,8 @@ class SisPicWin(QDialog):
         self.resize(800, 600)
 
     def placeItems(self):
-        for index, each in enumerate(self.picbs):
-            pix = QPixmap()
-            pix.loadFromData(each[1])
+        for index, each in enumerate(self.pics):
+            pix = QPixmap(each[1])
             icon = QIcon()
             icon.addPixmap(pix)
             listItem = QListWidgetItem()
@@ -685,6 +721,7 @@ class SisPicWin(QDialog):
             listItem.setSizeHint(QSize(90, 90))
             listItem.setData(1000, index)
             listItem.setData(1001, pix)
+            listItem.setData(1002, each[1])
             self.m_pListWidget.insertItem(index, listItem)
             if index == 0:
                 self.imageLabel.setPixmap(pix)
@@ -701,17 +738,23 @@ class SisPicWin(QDialog):
                                        QMessageBox.Ok | QMessageBox.Cancel)
         if reply == QMessageBox.Cancel:
             return
-        con = sqlite3.connect('SISDB.sqlite')
+        connect = sqlite3.connect('SISDB.sqlite')
         try:
-            delItem = self.picbs.pop(index)
-            con.cursor().execute('DELETE FROM PicByte WHERE tid=? AND picb=?', (delItem[0], delItem[1]))
-            if len(self.picbs) == 0:
-                con.cursor().execute('DELETE FROM PicLink WHERE tid=?', (delItem[0],))
-            con.commit()
-        except IndexError:
-            print(item.data(1000), ' delete err')
+            picpath = item.data(1002)
+            connect.cursor().execute('DELETE FROM PicMD5 WHERE path=?', (picpath,))
+            connect.cursor().execute('DELETE FROM PicPath WHERE path=?', (picpath,))
+            os.remove(picpath)
+            slash = '/'
+            if os.name == 'nt':
+                slash = '\\'
+            dirpath = picpath[:picpath.rfind(slash)]
+            if len(os.listdir(dirpath)) == 0:
+                os.removedirs(dirpath)
+            connect.commit()
+        except sqlite3.IntegrityError as err:
+            print(err)
         finally:
-            con.close()
+            connect.close()
             self.m_pListWidget.clear()
             self.placeItems()
 
