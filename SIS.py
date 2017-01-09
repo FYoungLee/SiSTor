@@ -10,14 +10,60 @@ import sys
 import hashlib
 import json
 import os
-from PyQt5.QtCore import QThread
-from PyQt5.QtCore import pyqtSignal
-from PyQt5.QtCore import QReadWriteLock
+from PyQt5.QtCore import QThread, pyqtSignal, QReadWriteLock
 
+
+DBPATH = ''
+def check_databases():
+    if 'SISDB.sqlite' not in os.listdir('.'):
+        connect = sqlite3.connect(DBPATH + 'SISDB.sqlite')
+        try:
+            connect.cursor().execute(
+                """
+                create table SIStops(
+                tid text primary key not null,
+                type text not null,
+                name text not null,
+                censor integer,
+                thumbup integer,
+                date integer,
+                category integer)
+                """)
+            connect.cursor().execute(
+                """
+                create table SISmags(
+                tid text not null,
+                magnet text not null)""")
+            connect.cursor().execute(
+                '''
+                create table PicPath(
+                tid text not null,
+                path text not null)
+                ''')
+            connect.cursor().execute(
+                '''
+                create table PicMD5(
+                path text not null,
+                md5 text primary key not null)
+                ''')
+            os.mkdir('img')
+        except:
+            pass
+        finally:
+            connect.commit()
+            connect.close()
+
+check_databases()
 Working_threads = {'page': 0, 'top': 0, 'tor': 0, 'pic': 0}
 SIS_Queries = {'top': [], 'tor': [], 'pic': []}
-with open('Jobs.json') as f:
-    SIS_POOLS = json.loads(f.read())
+Finished_jobs = {'pic': 0, 'tor': 0, 'top': 0}
+try:
+    with open('Jobs.json') as f:
+        SIS_POOLS = json.loads(f.read())
+except:
+    with open('Jobs.json', 'w') as f:
+        f.write(json.dumps({'proxies': [], 'pics queue': [], 'tors queue': [], 'tops queue': [], 'piced': {}}))
+
 
 class SISThread(QThread):
     locker = QReadWriteLock()
@@ -85,8 +131,8 @@ class TheDownloader(SISThread):
                 # when a connection problem occurred, this procedure will record which proxy made this problem
                 # and how many times of connection problem this proxy made.
                 # if the error times greater than 10, this proxy will be moved from proxies pool.
-                if t_times < 2:
-                    print('Time out on {} [{}], try again.'.format(url, t_times))
+                # if t_times < 2:
+                #    print('Time out on {} [{}], try again.'.format(url, t_times))
                 if proxy['http'] in self.bad_record.keys():
                     self.bad_record[proxy['http']] += 1
                 else:
@@ -109,7 +155,7 @@ class SISPageLoader(TheDownloader):
     """ this object intend to download all topics in the given forum """
     while True:
         try:
-            connectDB = sqlite3.connect('SISDB.sqlite')
+            connectDB = sqlite3.connect(DBPATH + 'SISDB.sqlite')
             rst = connectDB.cursor().execute('SELECT tid FROM SIStops').fetchall()
             Localtid = [x[0] for x in rst]
             connectDB.close()
@@ -173,6 +219,18 @@ class SISPageLoader(TheDownloader):
 
 
 class SISTopicLoader(TheDownloader):
+    while True:
+        try:
+            connectDB = sqlite3.connect(DBPATH + 'SISDB.sqlite')
+            rst = connectDB.cursor().execute('SELECT tid FROM PicPath').fetchall()
+            Localpic = [x[0] for x in rst]
+            rst = connectDB.cursor().execute('SELECT tid FROM SIStops').fetchall()
+            Localtop = [x[0] for x in rst]
+            connectDB.close()
+            break
+        except sqlite3.OperationalError:
+            continue
+
     def __init__(self, cookies=None, parent=None):
         super(SISTopicLoader, self).__init__(cookies, parent)
         Working_threads['top'] += 1
@@ -182,9 +240,7 @@ class SISTopicLoader(TheDownloader):
         super().deleteLater()
 
     def run(self):
-        while self.running:
-            if len(SIS_POOLS['pics queue']) + len(SIS_POOLS['tors queue']) > 20000:
-                return
+        while self.running:            
             try:
                 job = SIS_POOLS['tops queue'].pop(0)
             except IndexError:
@@ -209,7 +265,7 @@ class SISTopicLoader(TheDownloader):
         url = self.baseurl + job
         obj = self.make_soup(url)
         if obj is None:
-            print('{} Loading failed, put job back to queue.'.format(url))
+            # print('{} Loading failed, put job back to queue.'.format(url))
             self.put_back(job)
             return
         t_id = job.split('.')[0].replace('thread-', '')
@@ -225,56 +281,62 @@ class SISTopicLoader(TheDownloader):
         except AttributeError as err:
             print('{} extract torrents err, {} : Line {}'.format(url, err, sys.exc_info()[2].tb_frame.f_lineno))
             return
-        try:
-            t_type = obj.find('h1').a.text[1:-1]
-        except AttributeError as err:
-            print('{} extract type err, {} : Line {}'.format(url, err, sys.exc_info()[2].tb_frame.f_lineno))
-        try:
-            t_name = obj.find('h1').a.next_sibling.strip()
-        except AttributeError as err:
-            print('{} extract name err, {} : Line {}'.format(url, err, sys.exc_info()[2].tb_frame.f_lineno))
-        try:
-            t_censor = self.isMosic(obj)
-        except AttributeError as err:
-            print('{} extract censor err, {} : Line {}'.format(url, err, sys.exc_info()[2].tb_frame.f_lineno))
-        try:
-            t_thumbup = obj.find('a', {'id': 'ajax_thanks'}).text
-        except AttributeError as err:
-            print('{} extract thumbup err, {} : Line {}'.format(url, err, sys.exc_info()[2].tb_frame.f_lineno))
-        try:
-            t_date = re.search(r'(\d+-\d+-\d+)', obj.find('div', {'class': 'postinfo'}).text).group(1)
-            int_date = t_date.split('-')
-            t_date = datetime.datetime(int(int_date[0]), int(int_date[1]), int(int_date[2])).timestamp()
-        except AttributeError as err:
-            print('{} extract date err, {} : Line {}'.format(url, err, sys.exc_info()[2].tb_frame.f_lineno))
-        try:
-            catey_text = obj.find('div', {'id': 'nav'}).text.lower()
-            if 'asia' in catey_text:
-                t_category = 1
-            elif 'western' in catey_text:
-                t_category = 2
-            elif 'anime' in catey_text:
-                t_category = 3
+        if t_id not in self.Localtop:
             try:
-                self.locker.lockForWrite()
-                SIS_Queries['top'].append((t_id, t_type, t_name, t_censor, t_thumbup, t_date, t_category))
-            finally:
-                self.locker.unlock()
-            # push tors into queue
-        except AttributeError as err:
-            print('{} extract category err, {} : Line {}'.format(url, err, sys.exc_info()[2].tb_frame.f_lineno))
-
-        # push pics into queue
-        try:
-            for pic in obj.find('div', {'class': 't_msgfont'}).find_all('img', {'src': re.compile(r'jpg|png')}):
-                pic_url = pic['src']
+                t_type = obj.find('h1').a.text[1:-1]
+            except AttributeError as err:
+                print('{} extract type err, {} : Line {}'.format(url, err, sys.exc_info()[2].tb_frame.f_lineno))
+            try:
+                t_name = obj.find('h1').a.next_sibling.strip()
+            except AttributeError as err:
+                print('{} extract name err, {} : Line {}'.format(url, err, sys.exc_info()[2].tb_frame.f_lineno))
+            try:
+                t_censor = self.isMosic(obj)
+            except AttributeError as err:
+                print('{} extract censor err, {} : Line {}'.format(url, err, sys.exc_info()[2].tb_frame.f_lineno))
+            try:
+                t_thumbup = obj.find('a', {'id': 'ajax_thanks'}).text
+            except AttributeError as err:
+                print('{} extract thumbup err, {} : Line {}'.format(url, err, sys.exc_info()[2].tb_frame.f_lineno))
+            try:
+                t_date = re.search(r'(\d+-\d+-\d+)', obj.find('div', {'class': 'postinfo'}).text).group(1)
+                int_date = t_date.split('-')
+                t_date = datetime.datetime(int(int_date[0]), int(int_date[1]), int(int_date[2])).timestamp()
+            except AttributeError as err:
+                print('{} extract date err, {} : Line {}'.format(url, err, sys.exc_info()[2].tb_frame.f_lineno))
+            try:
+                catey_text = obj.find('div', {'id': 'nav'}).text.lower()
+                if 'asia' in catey_text:
+                    t_category = 1
+                elif 'western' in catey_text:
+                    t_category = 2
+                elif 'anime' in catey_text:
+                    t_category = 3
                 try:
                     self.locker.lockForWrite()
-                    SIS_POOLS['pics queue'].append((t_id, pic_url))
+                    SIS_Queries['top'].append((t_id, t_type, t_name, t_censor, t_thumbup, t_date, t_category))
                 finally:
                     self.locker.unlock()
-        except AttributeError as err:
-            print('{} extract pictures err, {} : Line {}'.format(url, err, sys.exc_info()[2].tb_frame.f_lineno))
+            # push tors into queue
+            except AttributeError as err:
+                print('{} extract category err, {} : Line {}'.format(url, err, sys.exc_info()[2].tb_frame.f_lineno))
+            
+
+        # push pics into queue
+        if t_id not in self.Localpic:
+            try:
+                for pic in obj.find('div', {'class': 't_msgfont'}).find_all('img', {'src': re.compile(r'jpg|png')}):
+                    pic_url = pic['src']
+                    if pic_url in SIS_POOLS['piced'].keys():
+                        continue
+                    try:
+                        self.locker.lockForWrite()
+                        SIS_POOLS['pics queue'].append((t_id, pic_url))
+                        SIS_POOLS['piced'][pic_url] = 1
+                    finally:
+                        self.locker.unlock()
+            except AttributeError as err:
+                print('{} extract pictures err, {} : Line {}'.format(url, err, sys.exc_info()[2].tb_frame.f_lineno))
         self.emitInfo('({}) {} Downloaded.'.format(t_id, t_name))
 
     def isMosic(self, obj):
@@ -326,7 +388,7 @@ class SISTorLoader(TheDownloader):
         url = self.baseurl + job[1]
         req = self.request_with_proxy(url)
         if req is None or req.ok is False:
-            print('{} downloading failed, back to queue.'.format(url))
+            # print('{} downloading failed, back to queue.'.format(url))
             self.put_back(job)
             return
         try:
@@ -356,7 +418,7 @@ class SISPicLoader(SISThread):
     def run(self):
         while self.running:
             try:
-                job = SIS_POOLS['pics queue'].pop(0)
+                job = SIS_POOLS['pics queue'].pop()
             except IndexError:
                 return
             try:
@@ -404,13 +466,13 @@ class SISSql(SISThread):
     def run(self):
         while True:
             try:
-                connect = sqlite3.connect('SISDB.sqlite')
+                connect = sqlite3.connect(DBPATH + 'SISDB.sqlite')
             except sqlite3.OperationalError:
                 time.sleep(1)
                 continue
             query = connect.cursor().execute
             try:
-                while len(SIS_Queries['pic']):
+                if len(SIS_Queries['pic']):
                     try:
                         picinfo = SIS_Queries['pic'].pop(0)
                         add_info = query('select category, type, date from SIStops where tid=?', (picinfo[0],)).fetchone()
@@ -424,34 +486,35 @@ class SISSql(SISThread):
                             query('insert into PicPath values(?, ?)', (picinfo[0], path))
                         except sqlite3.IntegrityError as err:
                             if 'UNIQUE' in str(err):
-                                exists_path = query('select path from PicMD5 where md5=?', (imgmd5,)).fetchone()
-                                query('insert into PicPath values(?, ?)', (picinfo[0], exists_path[0]))
+                                print('Duplicate pic[{}]: {}'.format(picinfo[0], imgmd5))
+                                exists_path = query('select tid, path from PicMD5 where md5=?', (imgmd5,)).fetchone()
+                                query('insert into PicPath values(?, ?)', (picinfo[0], exists_path[1]))
+                                print('Using path [{}]: {} instead'.format(exists_path[0], exists_path[1]))
                                 continue
-                        self.save_pic(path, picinfo[1])
-                        # query('INSERT INTO PicByte VALUES(?, ?)', (picinfo[0], picinfo[1]))
-                        # try:
-                        #     query('INSERT INTO PicLink (tid) VALUES(?)', (picinfo[0],))
-                        # except sqlite3.IntegrityError:
-                        #     pass
+                        self.save_pic(path, picinfo[1])                       
                         connect.commit()
+                        Finished_jobs['pic'] += 1
                     except sqlite3.IntegrityError as err:
                         # print('Pics inserting err, code: ', err)
                         pass
-                while len(SIS_Queries['tor']):
+                if len(SIS_Queries['tor']):
                     try:
                         torinfo = SIS_Queries['tor'].pop(0)
                         query('INSERT INTO SISmags VALUES(?, ?)', (torinfo[0], torinfo[1]))
+                        Finished_jobs['tor'] += 1
+                        connect.commit()
                     except sqlite3.IntegrityError as err:
                         pass
-                while len(SIS_Queries['top']):
+                if len(SIS_Queries['top']):
                     try:
                         maininfo = SIS_Queries['top'].pop(0)
                         query('INSERT INTO SIStops VALUES(?, ?, ?, ?, ?, ?, ?)',
                               (maininfo[0], maininfo[1], maininfo[2], maininfo[3],
                                maininfo[4], maininfo[5], maininfo[6]))
                         connect.commit()
+                        Finished_jobs['top'] += 1
                     except sqlite3.IntegrityError as err:
-                        print('Tops inserting err, code', err)
+                        # print('Tops inserting err, code', err)
                         pass
             except sqlite3.OperationalError:
                 time.sleep(1)
@@ -504,25 +567,6 @@ class ProxiesThread(TheDownloader):
                         continue
         elif self.which == 2:
             print('proxies 2 is running')
-            url = 'http://www.xicidaili.com/nn/{}'
-            while True:
-                for page in range(1, 1001):
-                    try:
-                        req = requests.get(url.format(page), headers=self.get_headers())
-                    except requests.exceptions.RequestException:
-                        time.sleep(5)
-                        continue
-                    pobj = BeautifulSoup(req.content, 'lxml').findAll('tr')
-                    for each in pobj[1:]:
-                        sp = each.findAll('td')
-                        proxy = sp[1].text + ':' + sp[2].text
-                        try:
-                            if requests.head(self.test_url, proxies={'http': proxy}, headers=self.get_headers(), timeout=3).ok:
-                                SIS_POOLS['proxies'].append(proxy)
-                        except requests.exceptions.RequestException:
-                            continue
-        elif self.which == 3:
-            print('proxies 3 is running')
             url = 'http://www.kuaidaili.com/free/outha/{}/'
             while True:
                 for page in range(1, 1415):
@@ -541,3 +585,25 @@ class ProxiesThread(TheDownloader):
                                 SIS_POOLS['proxies'].append(proxy)
                         except requests.exceptions.RequestException:
                             continue
+        """
+        elif self.which == 2:
+            print('proxies 2 is running')
+            url = 'http://www.xicidaili.com/nn/{}'
+            while True:
+                for page in range(1, 1001):
+                    try:
+                        req = requests.get(url.format(page), headers=self.get_headers())
+                    except requests.exceptions.RequestException:
+                        time.sleep(5)
+                        continue
+                    pobj = BeautifulSoup(req.content, 'lxml').findAll('tr')
+                    for each in pobj[1:]:
+                        sp = each.findAll('td')
+                        proxy = sp[1].text + ':' + sp[2].text
+                        try:
+                            if requests.head(self.test_url, proxies={'http': proxy}, headers=self.get_headers(), timeout=3).ok:
+                                SIS_POOLS['proxies'].append(proxy)
+                        except requests.exceptions.RequestException:
+                            continue
+        """
+        
