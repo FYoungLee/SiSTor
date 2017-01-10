@@ -66,7 +66,7 @@ try:
         SIS_POOLS = json.loads(f.read())
 except:
     with open('Jobs.json', 'w') as f:
-        f.write(json.dumps({'proxies': [], 'pics queue': [], 'tors queue': [], 'tops queue': [], 'piced': {}}))
+        f.write(json.dumps({'proxies': [], 'pics queue': [], 'tors queue': [], 'tops queue': []}))
 
 
 class SISThread(QThread):
@@ -331,12 +331,12 @@ class SISTopicLoader(TheDownloader):
             try:
                 for pic in obj.find('div', {'class': 't_msgfont'}).find_all('img', {'src': re.compile(r'jpg|png')}):
                     pic_url = pic['src']
-                    if pic_url in SIS_POOLS['piced'].keys():
-                        continue
+                    # if pic_url in SIS_POOLS['piced'].keys():
+                    #     continue
                     try:
                         self.locker.lockForWrite()
                         SIS_POOLS['pics queue'].append((t_id, pic_url))
-                        SIS_POOLS['piced'][pic_url] = 1
+                        # SIS_POOLS['piced'][pic_url] = 1
                     finally:
                         self.locker.unlock()
             except AttributeError as err:

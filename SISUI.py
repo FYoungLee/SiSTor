@@ -386,7 +386,7 @@ class BrowserWidget(QWidget):
         self.next_page_btn.setEnabled(False)
         self.next_page_btn.clicked.connect(self.nextClicked)
         self.result_label = QLabel()
-        self.result_label.setFixedWidth(200)
+        # self.result_label.setFixedWidth(200)
         self.b_topic_each_page_slider = QSlider(Qt.Horizontal)
         self.b_topic_each_page_slider.setRange(50, 5000)
         silderLabel = QLabel('50条/每页')
