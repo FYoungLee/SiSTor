@@ -10,10 +10,14 @@ import sys
 import hashlib
 import json
 import os
+import platform
 from PyQt5.QtCore import QThread, pyqtSignal, QReadWriteLock
 
 
 DBPATH = ''
+if 'fyang-MS-7816' in platform.node():
+    DBPATH = '/media/fyang/Bakcup/My Files/SIS/'
+
 def check_databases():
     if 'SISDB.sqlite' not in os.listdir('.'):
         connect = sqlite3.connect(DBPATH + 'SISDB.sqlite')
@@ -428,6 +432,7 @@ class SISPicLoader(SISThread):
                 pictype = self.isImage(bpic)
                 if 'none' in pictype:
                     print('{} is not an image.'.format(job[1]))
+                    continue
                 try:
                     self.locker.lockForWrite()
                     SIS_Queries['pic'].append((job[0], bpic, pictype))
@@ -525,10 +530,11 @@ class SISSql(SISThread):
         path_list = path.split(os.sep)
         for index in range(1, len(path_list)):
             try:
-                os.mkdir(os.sep.join(path_list[:index]))
+                each_path = DBPATH + os.sep.join(path_list[:index])
+                os.mkdir(each_path)
             except FileExistsError:
                 continue
-        with open(path, 'wb') as f:
+        with open(DBPATH + path, 'wb') as f:
             f.write(byte)
 
 
